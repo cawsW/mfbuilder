@@ -1,11 +1,12 @@
 import os
 import stat
 import math
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 from plpygis import Geometry
-from shapely import MultiPoint, Point
+from shapely import Polygon
 import flopy
 import flopy.discretization as fgrid
 from flopy.utils.gridgen import Gridgen
@@ -36,6 +37,7 @@ class ModelBase:
 
         self.version = config.get("version", "mf6")
         self.steady = config.get("steady", True)
+        self.perioddata = config.get("perioddata")
         self.units = config.get("units", "DAYS")
         self.simulation, self.model = self.__init_model()
 
@@ -44,9 +46,16 @@ class ModelBase:
             sim_name=self.name, exe_name=self.exe, version="mf6", sim_ws=self.workspace
         )
         if self.steady:
-            tdis = flopy.mf6.modflow.mftdis.ModflowTdis(
+            tdis = flopy.mf6.ModflowTdis(
                 sim, pname="tdis", time_units=self.units, nper=1, perioddata=[(1.0, 1, 1.0)]
             )
+        else:
+            if self.perioddata:
+                tdis = flopy.mf6.ModflowTdis(
+                    sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
+                )
+            else:
+                raise ValueError("No time steps specified for transient model")
         gwf = flopy.mf6.ModflowGwf(sim, modelname=self.name, model_nam_file=f"{self.name}.nam")
         ims = flopy.mf6.modflow.mfims.ModflowIms(sim, pname="ims", complexity="SIMPLE")
         return sim, gwf
@@ -56,25 +65,56 @@ class ModelAbstract:
     def __init__(self, model):
         self.model = model
 
+    def _grid_polygons(self):
+        modelgrid = self.model.modelgrid
+        poly_arr = modelgrid.map_polygons
+        rowcol = []
+        if type(modelgrid) is fgrid.StructuredGrid:
+            polygons = []
+            a, b = poly_arr
+            for i in range(len(a[0]) - 1):
+                for j in range(len(a) - 1):
+                    poly = Polygon([
+                        (a[0][i], a[1][j]),
+                        (a[0][i + 1], a[1][j]),
+                        (a[0][i + 1], a[1][j + 1]),
+                        (a[0][i], a[1][j + 1]),
+                        (a[0][i], a[1][j]),
+                    ])
+                    polygons.append(poly)
+                    rowcol.append((i, j))
+        else:
+            polygons = [Polygon(array.vertices) for array in poly_arr]
+        griddf = gpd.GeoDataFrame(data=rowcol, columns=["row", "col"], geometry=polygons)
+        griddf = griddf.replace(np.nan, -999)
+        return griddf
+
     def raster_resample(self, path, method="nearest"):
         rio = Raster.load(os.path.join(self.model.model_ws, path))
         data = rio.resample_to_grid(self.model.modelgrid, band=rio.bands[0], method=method)
         return data
 
-    def _intersection_grid(self, geometry, attribute="zone"):
-        ix = GridIntersect(self.model.modelgrid, method="vertex")
-        result = []
-        num = []
+    def _intersection_grid_attrs(self, geometry, attribute=[]):
         if type(geometry) is str:
             layer = gpd.read_file(os.path.join(self.model.model_ws, geometry))
-            geometry = layer.geometry
+        elif type(geometry) is pd.DataFrame:
+            geometry.columns = [col.lower() for col in geometry.columns]
+            layer = gpd.GeoDataFrame(geometry, geometry=gpd.points_from_xy(geometry.x, geometry.y))
+        else:
+            layer = gpd.GeoDataFrame({"geometry": geometry})
+        grid_poly = self._grid_polygons()
+        join_pdf = layer.sjoin(grid_poly, how="left")
+        join_pdf = join_pdf.astype({"row": int, "col": int, "index_right": int})
+        return join_pdf[["index_right", "row", "col"] + attribute]
 
-        for n, row in enumerate(geometry):
-            # FIXME it's better to use intersect method instead of intersects
-            cells = ix.intersects(row)
-            result.extend(cells)
-            num.extend([n] * len(cells))
-        return result, num
+    def _process_results(self, results, process_func):
+        std = []
+        for idx, row in results.iterrows():
+            if type(self.model.modelgrid) is fgrid.StructuredGrid:
+                std.append(process_func(row, "row", "col"))
+            else:
+                std.append(process_func(row, "index_right"))
+        return std
 
 
 class ModelGrid(ModelAbstract):
@@ -118,6 +158,7 @@ class ModelGrid(ModelAbstract):
             raise ValueError("No bottom specified")
         self.buffer = config.get("buffer", False)
         self.xmin, self.ymin, self.xmax, self.ymax = self.__init_bounds()
+        self.min_thickness = config.get("min_thickness", 0.1)
         self.create_dis()
 
     def check_boundary(self, boundary):
@@ -158,7 +199,7 @@ class ModelGrid(ModelAbstract):
 
     def _prepare_top(self):
         if type(self.top) is not str:
-            return self.top
+            return self.top * np.ones(self.model.modelgrid.ncpl)
         else:
             return self.raster_resample(self.top)
 
@@ -166,6 +207,8 @@ class ModelGrid(ModelAbstract):
         for i, bot in enumerate(self.botm):
             if type(bot) is str:
                 self.botm[i] = self.raster_resample(bot)
+            else:
+                self.botm[i] = bot * np.ones(self.model.modelgrid.ncpl)
         return self.botm
 
     def _temp_simulation(self):
@@ -227,8 +270,8 @@ class ModelGrid(ModelAbstract):
                 ncol=n_row,
                 delr=self.cell_size,
                 delc=self.cell_size,
-                top=self._prepare_top(),
-                botm=self._prepare_botm(),
+                top=0,
+                botm=[-10 * i for i in range(self.nlay)],
                 idomain=idomain,
                 xorigin=self.xmin, yorigin=self.xmin, angrot=0
             )
@@ -251,11 +294,29 @@ class ModelGrid(ModelAbstract):
                 cell2d=cell2d,
                 xorigin=self.xmin, yorigin=self.ymin, angrot=0
             )
-            dem_data = self._prepare_top()
-            bot_data = self._prepare_botm()
-            bot_data = np.where(dem_data - bot_data < 7, dem_data - 7, bot_data)
-            disv.top = dem_data
-            disv.botm = bot_data
+
+        idomain, elevations, dem = self.form_idomain()
+        disv.idomain = idomain
+        disv.top = dem
+        disv.botm = elevations
+
+    def form_idomain(self):
+        elevations, dem = self._reduce_geology()
+        dom = np.array([dem, *elevations])
+        idomain = []
+        for i, el in enumerate(dom[1:]):
+            idomain.append(np.where(dom[i] - el == 0, -1, 1))
+        return idomain, elevations, dem
+
+    def _reduce_geology(self):
+        dem_data = self._prepare_top()
+        bot_data = self._prepare_botm()
+        bot_data[0] = np.where(dem_data - bot_data[0] < self.min_thickness, dem_data - self.min_thickness, bot_data[0])
+        elevations = np.array([dem_data, *bot_data])[::-1]
+        prepare_elev = []
+        for lay in range(self.nlay):
+            prepare_elev.append(np.minimum.reduce(elevations[lay:]))
+        return prepare_elev[::-1], dem_data
 
 
 class ModelParameters(ModelAbstract):
@@ -278,8 +339,8 @@ class ModelParameters(ModelAbstract):
         if type(rch) is list:
             rch_std = []
             for poly in rch:
-                result, _ = self._intersection_grid(poly[0])
-                rch_std.append([[(0, *node[0]), poly[1]] for node in result])
+                result = self._intersection_grid_attrs(poly[0])
+                rch_std.append([[(0, node["row"], node["col"]), poly[1]] for idx, node in result.iterrows()])
             flopy.mf6.ModflowGwfrch(self.model, stress_period_data=[item for sublist in rch_std for item in sublist])
         elif type(rch) is float:
             flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch})
@@ -287,12 +348,21 @@ class ModelParameters(ModelAbstract):
             rch = self.raster_resample(rch)
             flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch})
 
+    def _add_sto(self):
+        options = self.packages.get("sto")
+        steady_state = {step: True for step in options.get("steady_state")}
+        transient = {step: True for step in options.get("transient")}
+        flopy.mf6.ModflowGwfsto(self.model, steady_state=steady_state, transient=transient,
+                                sy=options.get("sy"), ss=options.get("ss"), iconvert=options.get("iconvert"))
+
     def _add_ic(self):
         options = self.packages.get("ic")
         ic = flopy.mf6.ModflowGwfic(self.model, strt=options.get("head") if options else self.model.modelgrid.top)
 
     def add_packages(self):
         self._add_ic()
+        if self.packages.get("sto"):
+            self._add_sto()
         if self.packages.get("npf"):
             self._add_npf()
         if self.packages.get("rch"):
@@ -306,79 +376,192 @@ class ModelSourcesSinks(ModelAbstract):
         self.add_packages()
 
     def _add_river(self):
-        options = self.packages.get("riv")
-        std = []
-        last_num = 0
-        for option in options:
-            result, num = self._intersection_grid(option.get("geometry"))
-            if option["stage"] == "top":
-                std.append([[
-                    (0, *cell[0]) if type(self.model.modelgrid) is fgrid.StructuredGrid else (0, cell[0],),
-                    self.model.modelgrid.top[cell[0]], option["cond"],
-                    self.model.modelgrid.top[cell[0]] - option["depth"], f"zn_{zn + last_num}"] for cell, zn in
-                    zip(result, num)]
-                )
-                last_num = max(num) + 1
-        std = [item for sublist in std for item in sublist] if len(std) > 1 else std[0]
-        riv = flopy.mf6.ModflowGwfriv(self.model, stress_period_data=std, save_flows=True, boundnames=True)
+        data = self.packages.get("riv")
+
+        def river_func(row, *args):
+            if len(args) == 2:
+                top = self.model.modelgrid.top[(row[args[0]], row[args[1]])]
+                return [(0, row[args[0]], row[args[1]]), top, option["cond"], top - option["depth"]]
+            else:
+                top = self.model.modelgrid.top[row[args[0]]]
+                return [(0, row[args[0]]), top, option["cond"], top - option["depth"]]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                results = self._intersection_grid_attrs(option.get("geometry"))
+                if option["stage"] == "top":
+                    all_results.extend(self._process_results(results, river_func))
+            step_std[i] = all_results
+
+        return step_std
 
     def _add_ghb(self):
-        options = self.packages.get("ghb")
-        std = []
-        for option in options:
-            result, _ = self._intersection_grid(option.get("geometry"))
-            std.append(
-                [[(lay, *cell[0]) if type(self.model.modelgrid) is fgrid.StructuredGrid else (lay, cell[0],),
-                  option["head"], option["cond"]] for lay in option["layers"] for cell in result]
-            )
-        std = [item for sublist in std for item in sublist] if len(std) > 1 else std[0]
-        ghb = flopy.mf6.ModflowGwfghb(self.model, stress_period_data=std)
+        data = self.packages.get("ghb")
+
+        def ghb_func(row, *args):
+            if len(args) == 2:
+                return [(lay - 1, row[args[0]], row[args[1]]), option["head"], option["cond"]]
+            else:
+                return [(lay - 1, row[args[0]]), option["head"], option["cond"]]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                results = self._intersection_grid_attrs(option.get("geometry"))
+                for lay in option["layers"]:
+                    all_results.extend(self._process_results(results, ghb_func))
+            step_std[i] = all_results
+
+        return step_std
 
     def _add_drn(self):
-        options = self.packages.get("drn")
-        std = []
-        for option in options:
-            if option.get("geometry") == "all":
-                cells = self.model.modelgrid.cell2d
-            else:
-                cells, _ = self._intersection_grid(option.get("geometry"))
-            heads = self.model.modelgrid.top if option.get("head") == "top" else option.get("head")
-            result = zip(cells, heads)
+        data = self.packages.get("drn")
 
-            std.append(
-                [[(lay, *cell[0]) if type(self.model.modelgrid) is fgrid.StructuredGrid else (lay, cell[0],),
-                  top, option["cond"]] for lay in option["layers"] for cell, top in result]
-            )
-        std = [item for sublist in std for item in sublist] if len(std) > 1 else std[0]
-        drn = flopy.mf6.ModflowGwfdrn(self.model, stress_period_data=std)
+        def drn_func(row, *args):
+            if len(args) == 2:
+                head = self.model.modelgrid.top[(row[args[0]], row[args[1]])]
+                return [(lay - 1, row[args[0]], row[args[1]]), head, option["cond"]]
+            else:
+                head = self.model.modelgrid.top[row[args[0]]]
+                return [(lay - 1, row[args[0]]), head, option["cond"]]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                if option.get("geometry") == "all":
+                    results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d]})
+                else:
+                    results = self._intersection_grid_attrs(option.get("geometry"))
+                for lay in option["layers"]:
+                    all_results.extend(self._process_results(results, drn_func))
+            step_std[i] = all_results
+
+        return step_std
+
+    def _add_chd(self):
+        data = self.packages.get("chd")
+
+        def chd_func(row, *args):
+            if len(args) == 2:
+                return [(lay - 1, row[args[0]], row[args[1]]), option["head"]]
+            else:
+                return [(lay - 1, row[args[0]]), option["head"]]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                results = self._intersection_grid_attrs(option.get("geometry"))
+                for lay in option["layers"]:
+                    all_results.extend(self._process_results(results, chd_func))
+            step_std[i] = all_results
+
+        return step_std
+
+    def _add_wel(self):
+        data = self.packages.get("wel")
+
+        def wel_func(row, *args):
+            if len(args) == 2:
+                return [(int(row["lay"]) - 1, row[args[0]], row[args[1]]), row["q"]]
+            else:
+                return [(int(row["lay"]) - 1, int(row[args[0]])), row["q"]]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                attributes = []
+                q, lay = None, None
+                if type(option.get("q")) is str:
+                    q = option.get("q")
+                    attributes.append(q)
+                if type(option.get("layers")) is str:
+                    lay = option.get("layers")
+                    attributes.append(lay)
+                results = self._intersection_grid_attrs(option.get("geometry"), attribute=attributes)
+                if not q:
+                    results["q"] = option.get("q")
+                else:
+                    results.rename(columns={q: 'q'}, inplace=True)
+                if not lay:
+                    results["lay"] = option.get("layers")
+                else:
+                    results.rename(columns={lay: 'lay'}, inplace=True)
+                results['index_count'] = results.groupby(results.index)['index_right'].transform('count')
+                results["q"] = results["q"] / results["index_count"]
+                results["q"] = results.groupby("index_right")["q"].transform('sum')
+                all_results.extend(self._process_results(results, wel_func))
+            step_std[i] = all_results
+        return step_std
 
     def add_packages(self):
-        if self.packages.get("riv"):
-            self._add_river()
-        if self.packages.get("ghb"):
-            self._add_ghb()
-        if self.packages.get("drn"):
-            self._add_drn()
+        riv = self.packages.get("riv")
+        ghb = self.packages.get("ghb")
+        drn = self.packages.get("drn")
+        chd = self.packages.get("chd")
+        wel = self.packages.get("wel")
+
+        if riv:
+            step_std = self._add_river()
+            riv = flopy.mf6.ModflowGwfriv(self.model, stress_period_data=step_std, save_flows=True, boundnames=True)
+        if ghb:
+            step_std = self._add_ghb()
+            ghb = flopy.mf6.ModflowGwfghb(self.model, stress_period_data=step_std)
+        if drn:
+            step_std = self._add_drn()
+            drn = flopy.mf6.ModflowGwfdrn(self.model, stress_period_data=step_std)
+        if chd:
+            step_std = self._add_chd()
+            chd = flopy.mf6.ModflowGwfchd(self.model, stress_period_data=step_std)
+        if wel:
+            step_std = self._add_wel()
+            wel = flopy.mf6.ModflowGwfwel(self.model, stress_period_data=step_std)
 
 
-class ModelObservations:
+class ModelObservations(ModelAbstract):
     def __init__(self, model, config: dict):
-        self.model = model
+        super().__init__(model)
         self.packages = config
         self.add_packages()
 
     def _add_wells_obs(self):
         options = self.packages.get("wells")
+
+        def wel_obs_func(row, *args):
+            if len(args) == 2:
+                return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]], row[args[1]]))]
+            else:
+                return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]]))]
+
         obslist = []
         obsdict = {}
-        if options.endswith(".csv"):
-            obs = pd.read_csv(os.path.join(self.model.model_ws, options))
-            mp = MultiPoint(points=[Point(x, y, ids) for x, y, ids in zip(obs.X, obs.Y, obs.id1)])
-            ix = GridIntersect(self.model.modelgrid, method="vertex")
-            nodes = ix.intersect(mp)
-            obslist = [(f"h_{n[1].z}", "HEAD", (0, n[0]))
-                       if type(n[1]) is Point else
-                       (f"h_{n[1].geoms[0].z}", "HEAD", (0, n[0])) for n in nodes]
+        for option in options:
+            attributes = []
+            name, lay = None, None
+            if option.get("data").endswith(".csv"):
+                if type(option.get("name")) is str:
+                    name = option.get("name")
+                    attributes.append(name)
+                if type(option.get("layers")) is str:
+                    lay = option.get("layers")
+                    attributes.append(lay)
+                obs = pd.read_csv(os.path.join(self.model.model_ws, option.get("data")))
+                results = self._intersection_grid_attrs(obs, attribute=attributes)
+                if not name:
+                    results["name"] = option.get("name")
+                else:
+                    results.rename(columns={name: 'name'}, inplace=True)
+                if not lay:
+                    results["lay"] = option.get("layers")
+                else:
+                    results.rename(columns={lay: 'lay'}, inplace=True)
+                obslist = [obs_p[0] for obs_p in self._process_results(results, wel_obs_func)]
+
         obsdict[f"{self.model.name}.obs.head.csv"] = obslist
         obs = flopy.mf6.ModflowUtlobs(
             self.model, print_input=True, continuous=obsdict

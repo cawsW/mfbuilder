@@ -15,7 +15,8 @@ config_model = {
         "exe": "../bin/mf6",
         "version": "mf6",
         "units": "SECONDS",
-        "steady": True,
+        "steady": False,
+        "perioddata": [(1.0, 1, 1.0), (30, 6, 1.0)],
 
     },
     "grid": {
@@ -27,11 +28,11 @@ config_model = {
         "botm": [50, 40, -10],
     },
     "sources": {
-        "riv": {
-            0: [{"stage": "top", "cond": 100, "depth": 10, "geometry": [LineString([(0, 0), (0, 18000)])]}]
-        },
+        "riv":
+            {0: [{"stage": "top", "cond": 100, "depth": 10, "geometry": [LineString([(0, 0), (0, 18000)])]}]},
         "ghb": {
-            0: [{"head": 350, "cond": 1e-7, "geometry": [LineString([(18000, 0), (18000, 18000)])], "layers": [1, 3]}]
+            0: [{"head": 350, "cond": 1e-7, "geometry": [LineString([(18000, 0), (18000, 18000)])], "layers": [1, 3]}],
+            1: [{"head": 380, "cond": 1e-6, "geometry": [LineString([(18000, 0), (18000, 18000)])], "layers": [1, 3]}]
         },
     },
     "parameters": {
@@ -39,6 +40,7 @@ config_model = {
         "rch": [([Polygon([(0, 0), (0, 18000), (9000, 18000), (9000, 0), (0, 0)])], 63.072 * 3.170979e-10),
                 ([Polygon([(9000, 0), (18000, 0), (18000, 18000), (9000, 18000), (9000, 0)])], 31.536 * 3.170979e-10)],
         "ic": {"head": 200},
+        "sto": {"sy": 0.2, "ss": 0.0009, "iconvert": 1, "steady_state": [0], "transient": [1]}
     }
 }
 a = ModelBuilder(config_model)
