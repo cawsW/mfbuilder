@@ -12,4 +12,6 @@ pip-delete-this-directory.txt
 .idea/
 venv/
 .env
-/tests/novgorod
+/tests/*
+.ipynb_checkpoints
+archive/*

@@ -43,3 +43,4 @@ config_model = {
 }
 a = ModelBuilder(config_model)
 a.run()
+a.export()
