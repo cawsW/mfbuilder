@@ -12,6 +12,10 @@ import flopy.discretization as fgrid
 from flopy.utils.gridgen import Gridgen
 from flopy.utils import GridIntersect, Raster
 
+import rasterio
+from rasterio.transform import from_origin
+from scipy.interpolate import griddata
+
 
 class ModelBase:
     def __init__(self, config: dict):
@@ -56,8 +60,12 @@ class ModelBase:
                 )
             else:
                 raise ValueError("No time steps specified for transient model")
-        gwf = flopy.mf6.ModflowGwf(sim, modelname=self.name, model_nam_file=f"{self.name}.nam")
-        ims = flopy.mf6.modflow.mfims.ModflowIms(sim, pname="ims", complexity="SIMPLE")
+        gwf = flopy.mf6.ModflowGwf(
+            sim, modelname=self.name, model_nam_file=f"{self.name}.nam",
+            save_flows=True,
+            newtonoptions="NEWTON UNDER_RELAXATION",
+        )
+        ims = flopy.mf6.modflow.mfims.ModflowIms(sim, pname="ims", complexity="SIMPLE", linear_acceleration="BICGSTAB")
         return sim, gwf
 
 
@@ -75,11 +83,11 @@ class ModelAbstract:
             for i in range(len(a[0]) - 1):
                 for j in range(len(a) - 1):
                     poly = Polygon([
-                        (a[0][i], a[1][j]),
-                        (a[0][i + 1], a[1][j]),
-                        (a[0][i + 1], a[1][j + 1]),
-                        (a[0][i], a[1][j + 1]),
-                        (a[0][i], a[1][j]),
+                        (a[j][i], b[j][i]),
+                        (a[j][i + 1], b[j][i]),
+                        (a[j][i + 1], b[j + 1][i]),
+                        (a[j][i], b[j + 1][i]),
+                        (a[j][i], b[j][i]),
                     ])
                     polygons.append(poly)
                     rowcol.append((i, j))
@@ -104,6 +112,7 @@ class ModelAbstract:
             layer = gpd.GeoDataFrame({"geometry": geometry})
         grid_poly = self._grid_polygons()
         join_pdf = layer.sjoin(grid_poly, how="left")
+        join_pdf = join_pdf.dropna(subset=["index_right"])
         join_pdf = join_pdf.astype({"row": int, "col": int, "index_right": int})
         return join_pdf[["index_right", "row", "col"] + attribute]
 
@@ -111,7 +120,9 @@ class ModelAbstract:
         std = []
         for idx, row in results.iterrows():
             if type(self.model.modelgrid) is fgrid.StructuredGrid:
-                std.append(process_func(row, "row", "col"))
+                el = process_func(row, "row", "col")
+                if el:
+                    std.append(el)
             else:
                 std.append(process_func(row, "index_right"))
         return std
@@ -190,7 +201,10 @@ class ModelGrid(ModelAbstract):
             prj=self.proj_string, nlay=self.nlay
         )
         ix = GridIntersect(sgr, method="vertex")
-        result = ix.intersects(self.boundary)
+        if type(self.boundary) is gpd.GeoDataFrame:
+            result = ix.intersects(self.boundary.geometry[0])
+        else:
+            result = ix.intersects(self.boundary)
         idomain = np.zeros((self.nlay, n_col, n_row), dtype=np.int)
         for lay in range(self.nlay):
             for cellid in result.cellids:
@@ -207,8 +221,8 @@ class ModelGrid(ModelAbstract):
         for i, bot in enumerate(self.botm):
             if type(bot) is str:
                 self.botm[i] = self.raster_resample(bot)
-            else:
-                self.botm[i] = bot * np.ones(self.model.modelgrid.ncpl)
+            elif type(bot) is dict:
+                self.botm[i]["thick"] = bot["thick"] * np.ones(self.model.modelgrid.ncpl)
         return self.botm
 
     def _temp_simulation(self):
@@ -273,7 +287,7 @@ class ModelGrid(ModelAbstract):
                 top=0,
                 botm=[-10 * i for i in range(self.nlay)],
                 idomain=idomain,
-                xorigin=self.xmin, yorigin=self.xmin, angrot=0
+                xorigin=self.xmin, yorigin=self.ymin, angrot=0
             )
         else:
             gridprops = self._gridgen()
@@ -304,14 +318,33 @@ class ModelGrid(ModelAbstract):
         elevations, dem = self._reduce_geology()
         dom = np.array([dem, *elevations])
         idomain = []
-        for i, el in enumerate(dom[1:]):
-            idomain.append(np.where(dom[i] - el == 0, -1, 1))
+        if self.model.modelgrid.idomain is not None:
+            idomain_e = self.model.modelgrid.idomain
+            for i, el in enumerate(dom[1:]):
+                dom_nums = idomain_e[i].flatten()
+                idomain.append(np.where((dom[i] - el == 0) & (dom_nums == 1), -1, dom_nums))
+                # idomain[i] = np.where((dom[i] - el == 0) & (dom_nums == 1), -1, dom_nums).reshape(idomain[i].shape)
+        else:
+            for el in dom[1:]:
+                idomain.append(np.where(dom[0] - el == 0, -1, 1))
         return idomain, elevations, dem
 
     def _reduce_geology(self):
-        dem_data = self._prepare_top()
+        dem_data = self._prepare_top().flatten()
         bot_data = self._prepare_botm()
-        bot_data[0] = np.where(dem_data - bot_data[0] < self.min_thickness, dem_data - self.min_thickness, bot_data[0])
+        for i, bot in enumerate(bot_data):
+            if type(bot) is dict:
+                if i == 0:
+                    bot_data[i] = dem_data - bot["thick"]
+                    print(bot_data[i])
+                else:
+                    bot_data[i] = bot_data[i-1] - bot["thick"]
+            else:
+                bot_data[i] = bot.flatten()
+                if i == 0:
+                    bot_data[i] = np.where(dem_data - bot_data[i] < self.min_thickness, dem_data - self.min_thickness,
+                                           bot_data[i])
+        # bot_data = [dem_data - bot["thick"] if type(bot) is dict else bot for bot in bot_data]
         elevations = np.array([dem_data, *bot_data])[::-1]
         prepare_elev = []
         for lay in range(self.nlay):
@@ -328,11 +361,14 @@ class ModelParameters(ModelAbstract):
     def _add_npf(self):
         npf = self.packages.get("npf")
         hk = npf.get("k")
+        k33 = npf.get("k33")
         icell = npf.get("icelltype")
         for i, k in enumerate(hk):
             if type(k) is str:
                 hk[i] = self.raster_resample(k)
-        npf = flopy.mf6.ModflowGwfnpf(self.model, save_flows=True, k=hk, icelltype=icell)
+        npf = flopy.mf6.ModflowGwfnpf(self.model, save_flows=True, k=hk, icelltype=icell,
+                                      k33=k33 if k33 else None,
+                                      k33overk=True if k33 else None)
 
     def _add_rch(self):
         rch = self.packages.get("rch")
@@ -377,24 +413,34 @@ class ModelSourcesSinks(ModelAbstract):
 
     def _add_river(self):
         data = self.packages.get("riv")
-
         def river_func(row, *args):
             if len(args) == 2:
-                top = self.model.modelgrid.top[(row[args[0]], row[args[1]])]
-                return [(0, row[args[0]], row[args[1]]), top, option["cond"], top - option["depth"]]
+                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
+                    top = self.model.modelgrid.top[(int(row[args[1]]), int(row[args[0]]))]
+                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), top, row["cond"], top - option["depth"],
+                            f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
             else:
-                top = self.model.modelgrid.top[row[args[0]]]
-                return [(0, row[args[0]]), top, option["cond"], top - option["depth"]]
+                top = self.model.modelgrid.top[int(row[args[0]])]
+                return [(lay - 1, int(row[args[0]])), top, row["cond"], top - option["depth"],
+                        f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
         step_std = {}
         for i, options in data.items():
             all_results = []
             for option in options:
-                results = self._intersection_grid_attrs(option.get("geometry"))
+                attributes = []
+                cond = None
+                if type(option.get("cond")) is str:
+                    cond = option.get("cond")
+                    attributes.append(cond)
+                results = self._intersection_grid_attrs(option.get("geometry"), attribute=attributes)
+                if not cond:
+                    results["cond"] = option.get("cond")
                 if option["stage"] == "top":
-                    all_results.extend(self._process_results(results, river_func))
+                    for lay in option["layers"]:
+                        zz = 0
+                        all_results.extend(self._process_results(results, river_func))
             step_std[i] = all_results
-
         return step_std
 
     def _add_ghb(self):
@@ -402,7 +448,7 @@ class ModelSourcesSinks(ModelAbstract):
 
         def ghb_func(row, *args):
             if len(args) == 2:
-                return [(lay - 1, row[args[0]], row[args[1]]), option["head"], option["cond"]]
+                return [(lay - 1, row[args[1]], row[args[0]]), option["head"], option["cond"]]
             else:
                 return [(lay - 1, row[args[0]]), option["head"], option["cond"]]
 
@@ -422,7 +468,7 @@ class ModelSourcesSinks(ModelAbstract):
 
         def drn_func(row, *args):
             if len(args) == 2:
-                head = self.model.modelgrid.top[(row[args[0]], row[args[1]])]
+                head = self.model.modelgrid.top[(row[args[1]], row[args[0]])]
                 return [(lay - 1, row[args[0]], row[args[1]]), head, option["cond"]]
             else:
                 head = self.model.modelgrid.top[row[args[0]]]
@@ -447,7 +493,7 @@ class ModelSourcesSinks(ModelAbstract):
 
         def chd_func(row, *args):
             if len(args) == 2:
-                return [(lay - 1, row[args[0]], row[args[1]]), option["head"]]
+                return [(lay - 1, row[args[1]], row[args[0]]), option["head"]]
             else:
                 return [(lay - 1, row[args[0]]), option["head"]]
 
@@ -467,7 +513,7 @@ class ModelSourcesSinks(ModelAbstract):
 
         def wel_func(row, *args):
             if len(args) == 2:
-                return [(int(row["lay"]) - 1, row[args[0]], row[args[1]]), row["q"]]
+                return [(int(row["lay"]) - 1, row[args[1]], row[args[0]]), row["q"]]
             else:
                 return [(int(row["lay"]) - 1, int(row[args[0]])), row["q"]]
 
@@ -534,7 +580,8 @@ class ModelObservations(ModelAbstract):
 
         def wel_obs_func(row, *args):
             if len(args) == 2:
-                return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]], row[args[1]]))]
+                if self.model.modelgrid.idomain[0][(row[args[1]], row[args[0]])] == 1:
+                    return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[1]], row[args[0]]))]
             else:
                 return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]]))]
 
@@ -617,3 +664,86 @@ class ModelBuilder:
                 print(line)
         else:
             raise ValueError("Failed to run.")
+
+    def create_raster(self, size, array, name, dir):
+        crs = self.grid.proj_string
+        range_x = self.grid.xmax - self.grid.xmin
+        range_y = self.grid.ymax - self.grid.ymin
+        num_cells_x = int(range_x / size)
+        num_cells_y = int(range_y / size)
+        if type(self.base.model.modelgrid) is fgrid.StructuredGrid:
+            cell2d = self.base.model.modelgrid.xyzcellcenters
+            centroids_x = cell2d[0].flatten()
+            centroids_y = cell2d[1].flatten()
+        else:
+            cell2d = self.base.model.modelgrid.cell2d
+            centroids_x = [cell[1] for cell in cell2d]
+            centroids_y = [cell[2] for cell in cell2d]
+        gridx, gridy = np.meshgrid(np.linspace(self.grid.xmin, self.grid.xmax, num=num_cells_x),
+                                   np.linspace(self.grid.ymin, self.grid.ymax, num=num_cells_y))
+        transform = from_origin(gridx.min(), gridy.max(), size, size)
+        original_coords = np.array([centroids_x, centroids_y]).T
+
+        interpolated_data = griddata(original_coords, array.flatten(), (gridx, gridy), method='linear')
+
+        new_dataset = rasterio.open(
+         os.path.join(dir, f"{name}.tif"),
+            'w',
+            driver='GTiff',
+            height=interpolated_data.shape[0],
+            width=interpolated_data.shape[1],
+            count=1,
+            dtype=str(interpolated_data.dtype),
+            nodata=np.nan,
+            crs=crs,
+            transform=transform,
+        )
+        new_dataset.write(interpolated_data[::-1], 1)
+        new_dataset.close()
+
+    def get_heads(self, per):
+        headfile = f"{self.base.model.name}.hds"
+        fname = os.path.join(self.base.model.model_ws, headfile)
+        hds = flopy.utils.HeadFile(fname)
+        head = hds.get_data(kstpkper=per)
+        return head
+
+    def get_npf(self):
+        npf = self.base.model.get_package("NPF")
+        return npf.k.array
+
+    def _create_dir(self):
+        out_dir = os.path.join(self.base.model.model_ws, "output")
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+        return out_dir
+
+    def get_observations(self, directory):
+        well_heads = self.observations.packages.get("wells")
+        if well_heads:
+            obs = pd.read_csv(os.path.join(self.base.model.model_ws, well_heads[0].get("data")))
+            obs["name"] = "H_" + str(obs["name"])
+            model_obs = pd.read_csv(os.path.join(self.base.model.model_ws, f"{self.base.model.name}.obs.head.csv"))
+            model_obs = model_obs.transpose().reset_index()
+            model_obs.columns = ["name", "head_model"]
+            res = model_obs.merge(obs, on="name")
+            res.to_csv(os.path.join(directory, "residuals.csv"), index=False)
+
+    def export(self):
+        dir = self._create_dir()
+        perioddata = self.base.simulation.get_package("tdis").perioddata.array
+        ex_arr = []
+        surf_arr = []
+        ex_arr.extend([(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in range(per[1])])
+        ex_arr.extend([(f"npf_lay_", self.get_npf())])
+        surf_arr.extend([(f"bot_lay_", self.base.model.modelgrid.botm)])
+        surf_arr.extend([(f"top_lay_", [self.base.model.modelgrid.top])])
+        self.get_observations(dir)
+        # for name, arr in ex_arr:
+        #     for lay, la in enumerate(arr):
+        #         self.create_raster(500, la, f"{name}{lay}", dir)
+
+        for name, arr in surf_arr:
+            for lay, la in enumerate(arr):
+                self.create_raster(50, la, f"{name}{lay}", dir)
+
