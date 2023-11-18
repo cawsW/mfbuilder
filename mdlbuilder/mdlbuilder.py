@@ -18,7 +18,7 @@ from scipy.interpolate import griddata
 
 
 class ModelBase:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, editing):
         if config.get("name"):
             self.name = config.get("name")
         else:
@@ -43,29 +43,40 @@ class ModelBase:
         self.steady = config.get("steady", True)
         self.perioddata = config.get("perioddata")
         self.units = config.get("units", "DAYS")
+        self.editing = editing
         self.simulation, self.model = self.__init_model()
 
     def __init_model(self):
-        sim = flopy.mf6.MFSimulation(
-            sim_name=self.name, exe_name=self.exe, version="mf6", sim_ws=self.workspace
-        )
-        if self.steady:
-            tdis = flopy.mf6.ModflowTdis(
-                sim, pname="tdis", time_units=self.units, nper=1, perioddata=[(1.0, 1, 1.0)]
+        if not self.editing:
+            sim = flopy.mf6.MFSimulation(
+                sim_name=self.name, exe_name=self.exe, version="mf6", sim_ws=self.workspace
             )
-        else:
-            if self.perioddata:
+            if self.steady:
                 tdis = flopy.mf6.ModflowTdis(
-                    sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
+                    sim, pname="tdis", time_units=self.units, nper=1, perioddata=[(1.0, 1, 1.0)]
                 )
             else:
-                raise ValueError("No time steps specified for transient model")
-        gwf = flopy.mf6.ModflowGwf(
-            sim, modelname=self.name, model_nam_file=f"{self.name}.nam",
-            save_flows=True,
-            newtonoptions="NEWTON UNDER_RELAXATION",
-        )
-        ims = flopy.mf6.modflow.mfims.ModflowIms(sim, pname="ims", complexity="SIMPLE", linear_acceleration="BICGSTAB")
+                if self.perioddata:
+                    tdis = flopy.mf6.ModflowTdis(
+                        sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
+                    )
+                else:
+                    raise ValueError("No time steps specified for transient model")
+            gwf = flopy.mf6.ModflowGwf(
+                sim, modelname=self.name, model_nam_file=f"{self.name}.nam",
+                save_flows=True,
+                newtonoptions="NEWTON UNDER_RELAXATION",
+            )
+            ims = flopy.mf6.modflow.mfims.ModflowIms(sim, pname="ims", complexity="SIMPLE", linear_acceleration="BICGSTAB")
+        else:
+            sim = flopy.mf6.MFSimulation.load(sim_ws=self.workspace, exe_name=self.exe)
+            if not self.steady:
+                if self.perioddata:
+                    sim.remove_package("tdis")
+                    tdis = flopy.mf6.ModflowTdis(
+                        sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
+                    )
+            gwf = sim.get_model(self.name)
         return sim, gwf
 
 
@@ -95,6 +106,7 @@ class ModelAbstract:
             polygons = [Polygon(array.vertices) for array in poly_arr]
         griddf = gpd.GeoDataFrame(data=rowcol, columns=["row", "col"], geometry=polygons)
         griddf = griddf.replace(np.nan, -999)
+        # griddf = griddf.to_file('grid.shp')
         return griddf
 
     def raster_resample(self, path, method="nearest"):
@@ -118,6 +130,7 @@ class ModelAbstract:
 
     def _process_results(self, results, process_func):
         std = []
+        results = results.drop_duplicates()
         for idx, row in results.iterrows():
             if type(self.model.modelgrid) is fgrid.StructuredGrid:
                 el = process_func(row, "row", "col")
@@ -129,7 +142,7 @@ class ModelAbstract:
 
 
 class ModelGrid(ModelAbstract):
-    def __init__(self, model, config: dict):
+    def __init__(self, model, config: dict, editing):
         super().__init__(model)
         self.proj_string = config.get("proj_string", "EPSG:3857")
         if config.get("type"):
@@ -170,7 +183,8 @@ class ModelGrid(ModelAbstract):
         self.buffer = config.get("buffer", False)
         self.xmin, self.ymin, self.xmax, self.ymax = self.__init_bounds()
         self.min_thickness = config.get("min_thickness", 0.1)
-        self.create_dis()
+        if not editing:
+            self.create_dis()
 
     def check_boundary(self, boundary):
         if type(boundary) is str:
@@ -308,11 +322,14 @@ class ModelGrid(ModelAbstract):
                 cell2d=cell2d,
                 xorigin=self.xmin, yorigin=self.ymin, angrot=0
             )
-
-        idomain, elevations, dem = self.form_idomain()
-        disv.idomain = idomain
-        disv.top = dem
-        disv.botm = elevations
+        if not all(isinstance(x, float) for x in self.botm):
+            idomain, elevations, dem = self.form_idomain()
+            disv.idomain = idomain
+            disv.top = dem
+            disv.botm = elevations
+        else:
+            disv.top = self.top
+            disv.botm = self.botm
 
     def form_idomain(self):
         elevations, dem = self._reduce_geology()
@@ -336,7 +353,6 @@ class ModelGrid(ModelAbstract):
             if type(bot) is dict:
                 if i == 0:
                     bot_data[i] = dem_data - bot["thick"]
-                    print(bot_data[i])
                 else:
                     bot_data[i] = bot_data[i-1] - bot["thick"]
             else:
@@ -353,9 +369,10 @@ class ModelGrid(ModelAbstract):
 
 
 class ModelParameters(ModelAbstract):
-    def __init__(self, model, config: dict):
+    def __init__(self, model, config: dict, editing):
         super().__init__(model)
         self.packages = config
+        self.editing = editing
         self.add_packages()
 
     def _add_npf(self):
@@ -398,29 +415,43 @@ class ModelParameters(ModelAbstract):
     def add_packages(self):
         self._add_ic()
         if self.packages.get("sto"):
+            if self.editing:
+                self.model.remove_package("STO")
             self._add_sto()
         if self.packages.get("npf"):
+            if self.editing:
+                self.model.remove_package("NPF")
             self._add_npf()
         if self.packages.get("rch"):
+            if self.editing:
+                self.model.remove_package("RCH")
             self._add_rch()
 
 
 class ModelSourcesSinks(ModelAbstract):
-    def __init__(self, model, config: dict):
+    def __init__(self, model, config: dict, editing):
         super().__init__(model)
         self.packages = config
+        self.editing = editing
         self.add_packages()
 
     def _add_river(self):
         data = self.packages.get("riv")
+
         def river_func(row, *args):
             if len(args) == 2:
                 if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
-                    top = self.model.modelgrid.top[(int(row[args[1]]), int(row[args[0]]))]
+                    if stages == "top":
+                        top = self.model.modelgrid.top[(int(row[args[1]]), int(row[args[0]]))]
+                    else:
+                        top = stages[(int(row[args[1]]), int(row[args[0]]))]
                     return [(lay - 1, int(row[args[1]]), int(row[args[0]])), top, row["cond"], top - option["depth"],
                             f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
             else:
-                top = self.model.modelgrid.top[int(row[args[0]])]
+                if stages == "top":
+                    top = self.model.modelgrid.top[int(row[args[0]])]
+                else:
+                    top = stages[int(row[args[0]])]
                 return [(lay - 1, int(row[args[0]])), top, row["cond"], top - option["depth"],
                         f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
@@ -436,10 +467,13 @@ class ModelSourcesSinks(ModelAbstract):
                 results = self._intersection_grid_attrs(option.get("geometry"), attribute=attributes)
                 if not cond:
                     results["cond"] = option.get("cond")
-                if option["stage"] == "top":
-                    for lay in option["layers"]:
-                        zz = 0
-                        all_results.extend(self._process_results(results, river_func))
+                if option.get("stage") != "top":
+                    stages = self.raster_resample(option.get("stage"))
+                else:
+                    stages = option.get("stage")
+                for lay in option["layers"]:
+                    zz = 0
+                    all_results.extend(self._process_results(results, river_func))
             step_std[i] = all_results
         return step_std
 
@@ -448,15 +482,22 @@ class ModelSourcesSinks(ModelAbstract):
 
         def ghb_func(row, *args):
             if len(args) == 2:
-                return [(lay - 1, row[args[1]], row[args[0]]), option["head"], option["cond"]]
+                return [(lay - 1, int(row[args[1]]), int(row[args[0]])), row["head"], option["cond"]]
             else:
-                return [(lay - 1, row[args[0]]), option["head"], option["cond"]]
+                return [(lay - 1, int(row[args[0]])), row["head"], option["cond"]]
 
         step_std = {}
         for i, options in data.items():
             all_results = []
             for option in options:
-                results = self._intersection_grid_attrs(option.get("geometry"))
+                attributes = []
+                cond = None
+                if type(option.get("head")) is str:
+                    cond = option.get("head")
+                    attributes.append(cond)
+                results = self._intersection_grid_attrs(option.get("geometry"), attributes)
+                if not cond:
+                    results["head"] = option.get("head")
                 for lay in option["layers"]:
                     all_results.extend(self._process_results(results, ghb_func))
             step_std[i] = all_results
@@ -468,8 +509,9 @@ class ModelSourcesSinks(ModelAbstract):
 
         def drn_func(row, *args):
             if len(args) == 2:
-                head = self.model.modelgrid.top[(row[args[1]], row[args[0]])]
-                return [(lay - 1, row[args[0]], row[args[1]]), head, option["cond"]]
+                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
+                    head = self.model.modelgrid.top[(row[args[1]], row[args[0]])]
+                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head, option["cond"]]
             else:
                 head = self.model.modelgrid.top[row[args[0]]]
                 return [(lay - 1, row[args[0]]), head, option["cond"]]
@@ -479,7 +521,11 @@ class ModelSourcesSinks(ModelAbstract):
             all_results = []
             for option in options:
                 if option.get("geometry") == "all":
-                    results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d]})
+                    if type(self.model.modelgrid) is fgrid.StructuredGrid:
+                        results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in range(self.model.modelgrid.nrow)],
+                                               "col": [j for i in range(self.model.modelgrid.ncol) for j in range(self.model.modelgrid.nrow)]})
+                    else:
+                        results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d]})
                 else:
                     results = self._intersection_grid_attrs(option.get("geometry"))
                 for lay in option["layers"]:
@@ -493,27 +539,52 @@ class ModelSourcesSinks(ModelAbstract):
 
         def chd_func(row, *args):
             if len(args) == 2:
-                return [(lay - 1, row[args[1]], row[args[0]]), option["head"]]
+                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
+                    if type(heads) is not int or type(heads) is not float:
+                        head = heads[(row[args[1]], row[args[0]])]
+                    else:
+                        head = heads
+                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head]
             else:
-                return [(lay - 1, row[args[0]]), option["head"]]
+                if type(heads) is not int or type(heads) is not float:
+                    head = heads[row[args[0]]]
+                else:
+                    head = heads
+                return [(lay - 1, int(row[args[0]])), head]
 
         step_std = {}
         for i, options in data.items():
             all_results = []
             for option in options:
                 results = self._intersection_grid_attrs(option.get("geometry"))
+                if type(option.get("head")) is str:
+                    heads = self.raster_resample(option.get("head"))
+                else:
+                    heads = option.get("head")
                 for lay in option["layers"]:
                     all_results.extend(self._process_results(results, chd_func))
+            all_results = self.delete_duplicates_grid_package(all_results)
             step_std[i] = all_results
 
         return step_std
+
+    @staticmethod
+    def delete_duplicates_grid_package(example_list):
+        unique_list = []
+        seen_tuples = set()
+        for sublist in example_list:
+            if sublist[0] not in seen_tuples:
+                unique_list.append(sublist)
+                seen_tuples.add(sublist[0])
+        return unique_list
 
     def _add_wel(self):
         data = self.packages.get("wel")
 
         def wel_func(row, *args):
             if len(args) == 2:
-                return [(int(row["lay"]) - 1, row[args[1]], row[args[0]]), row["q"]]
+                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
+                    return [(int(row["lay"]) - 1, int(row[args[1]]), int(row[args[0]])), -row["q"]]
             else:
                 return [(int(row["lay"]) - 1, int(row[args[0]])), row["q"]]
 
@@ -553,27 +624,38 @@ class ModelSourcesSinks(ModelAbstract):
         wel = self.packages.get("wel")
 
         if riv:
+            if self.editing:
+                self.model.remove_package("RIV")
             step_std = self._add_river()
             riv = flopy.mf6.ModflowGwfriv(self.model, stress_period_data=step_std, save_flows=True, boundnames=True)
         if ghb:
+            if self.editing:
+                self.model.remove_package("GHB")
             step_std = self._add_ghb()
             ghb = flopy.mf6.ModflowGwfghb(self.model, stress_period_data=step_std)
         if drn:
+            if self.editing:
+                self.model.remove_package("DRN")
             step_std = self._add_drn()
             drn = flopy.mf6.ModflowGwfdrn(self.model, stress_period_data=step_std)
         if chd:
+            if self.editing:
+                self.model.remove_package("CHD")
             step_std = self._add_chd()
             chd = flopy.mf6.ModflowGwfchd(self.model, stress_period_data=step_std)
         if wel:
+            if self.editing:
+                self.model.remove_package("WEL")
             step_std = self._add_wel()
             wel = flopy.mf6.ModflowGwfwel(self.model, stress_period_data=step_std)
 
 
 class ModelObservations(ModelAbstract):
-    def __init__(self, model, config: dict):
+    def __init__(self, model, config: dict, editing):
         super().__init__(model)
         self.packages = config
-        self.add_packages()
+        if not editing:
+            self.add_packages()
 
     def _add_wells_obs(self):
         options = self.packages.get("wells")
@@ -620,24 +702,22 @@ class ModelObservations(ModelAbstract):
 
 
 class ModelBuilder:
-    def __init__(self, config: dict, external=False):
+    def __init__(self, config: dict, external=False, editing=False):
         if config.get("base"):
-            self.base = ModelBase(config.get("base"))
+            self.base = ModelBase(config.get("base"), editing)
         else:
             raise ValueError("No base options specified")
 
         if config.get("grid"):
-            self.grid = ModelGrid(self.base.model, config.get("grid"))
+            self.grid = ModelGrid(self.base.model, config.get("grid"), editing)
         else:
             raise ValueError("No grid options specified")
-
         if config.get("parameters"):
-            self.parameters = ModelParameters(self.base.model, config.get("parameters"))
+            self.parameters = ModelParameters(self.base.model, config.get("parameters"), editing)
         else:
-            raise ValueError("No parameters options specified")
-
-        self.sources = ModelSourcesSinks(self.base.model, config.get("sources")) if config.get("sources") else None
-        self.observations = ModelObservations(self.base.model, config.get("observations")) if config.get(
+            print("No parameters options specified")
+        self.sources = ModelSourcesSinks(self.base.model, config.get("sources"), editing) if config.get("sources") else None
+        self.observations = ModelObservations(self.base.model, config.get("observations"), editing) if config.get(
             "observations") else None
         self.external = external
 
@@ -667,8 +747,8 @@ class ModelBuilder:
 
     def create_raster(self, size, array, name, dir):
         crs = self.grid.proj_string
-        range_x = self.grid.xmax - self.grid.xmin
-        range_y = self.grid.ymax - self.grid.ymin
+        range_x = (self.grid.xmax - self.grid.xmin) + 20 * size
+        range_y = (self.grid.ymax - self.grid.ymin) + 20 * size
         num_cells_x = int(range_x / size)
         num_cells_y = int(range_y / size)
         if type(self.base.model.modelgrid) is fgrid.StructuredGrid:
@@ -679,13 +759,13 @@ class ModelBuilder:
             cell2d = self.base.model.modelgrid.cell2d
             centroids_x = [cell[1] for cell in cell2d]
             centroids_y = [cell[2] for cell in cell2d]
-        gridx, gridy = np.meshgrid(np.linspace(self.grid.xmin, self.grid.xmax, num=num_cells_x),
-                                   np.linspace(self.grid.ymin, self.grid.ymax, num=num_cells_y))
+        gridx, gridy = np.meshgrid(np.linspace(self.grid.xmin - 10 * size, self.grid.xmax + 10 * size, num=num_cells_x),
+                                   np.linspace(self.grid.ymin - 10 * size, self.grid.ymax + 10 * size, num=num_cells_y))
         transform = from_origin(gridx.min(), gridy.max(), size, size)
         original_coords = np.array([centroids_x, centroids_y]).T
 
         interpolated_data = griddata(original_coords, array.flatten(), (gridx, gridy), method='linear')
-
+        interpolated_data = np.where(interpolated_data > 1e6, -999, interpolated_data)
         new_dataset = rasterio.open(
          os.path.join(dir, f"{name}.tif"),
             'w',
@@ -712,6 +792,10 @@ class ModelBuilder:
         npf = self.base.model.get_package("NPF")
         return npf.k.array
 
+    def get_rch(self):
+        rch = self.base.model.get_package("RCH")
+        return rch.recharge.array
+
     def _create_dir(self):
         out_dir = os.path.join(self.base.model.model_ws, "output")
         if not os.path.exists(out_dir):
@@ -722,7 +806,7 @@ class ModelBuilder:
         well_heads = self.observations.packages.get("wells")
         if well_heads:
             obs = pd.read_csv(os.path.join(self.base.model.model_ws, well_heads[0].get("data")))
-            obs["name"] = "H_" + str(obs["name"])
+            obs["name"] = "H_" + obs["name"].astype(str)
             model_obs = pd.read_csv(os.path.join(self.base.model.model_ws, f"{self.base.model.name}.obs.head.csv"))
             model_obs = model_obs.transpose().reset_index()
             model_obs.columns = ["name", "head_model"]
@@ -736,14 +820,15 @@ class ModelBuilder:
         surf_arr = []
         ex_arr.extend([(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in range(per[1])])
         ex_arr.extend([(f"npf_lay_", self.get_npf())])
+        ex_arr.extend([(f"rch_lay_", self.get_rch())])
         surf_arr.extend([(f"bot_lay_", self.base.model.modelgrid.botm)])
         surf_arr.extend([(f"top_lay_", [self.base.model.modelgrid.top])])
-        self.get_observations(dir)
-        # for name, arr in ex_arr:
-        #     for lay, la in enumerate(arr):
-        #         self.create_raster(500, la, f"{name}{lay}", dir)
+        for name, arr in ex_arr:
+            for lay, la in enumerate(arr):
+                self.create_raster(50, la, f"{name}{lay}", dir)
 
         for name, arr in surf_arr:
             for lay, la in enumerate(arr):
                 self.create_raster(50, la, f"{name}{lay}", dir)
 
+        self.get_observations(dir)
