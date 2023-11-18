@@ -46,16 +46,22 @@ def create_variogram(df, model):
     variogram = Variogram(points, values, model=model)
     variogram.plot()
     plt.show()
+    return variogram
 
 
-def kriging_interpolate(df, model, gridx, gridy):
+def kriging_interpolate(df, model, gridx, gridy, par=None, nlags=25):
+    print(par)
     OK = OrdinaryKriging(
         df['X'],
         df['Y'],
         df['elevation'],
         variogram_model=model,
         verbose=False,
-        enable_plotting=False,
+        enable_plotting=True,
+        # anisotropy_angle=90,
+        pseudo_inv=True,
+        nlags=nlags,
+        # variogram_parameters=par if par else None
     )
     z, ss = OK.execute("grid", gridx, gridy)
     return z, ss
@@ -80,6 +86,7 @@ def create_raster(name, elevations, gridx, gridy, crs):
 
 def lines_to_points(gdf):
     point_df = pd.DataFrame()
+    gdf = gdf.explode()
     i = 0
     for index, row in gdf.iterrows():
         if row.geometry is not None:  # Check for false geometries
