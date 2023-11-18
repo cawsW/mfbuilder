@@ -13,5 +13,6 @@ pip-delete-this-directory.txt
 venv/
 .env
 /tests/*
+!/tests/*.py
 .ipynb_checkpoints
 archive/*
