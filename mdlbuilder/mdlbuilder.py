@@ -11,6 +11,7 @@ import flopy
 import flopy.discretization as fgrid
 from flopy.utils.gridgen import Gridgen
 from flopy.utils import GridIntersect, Raster
+from shapely.ops import unary_union
 
 import rasterio
 from rasterio.transform import from_origin
@@ -67,7 +68,11 @@ class ModelBase:
                 save_flows=True,
                 newtonoptions="NEWTON UNDER_RELAXATION",
             )
-            ims = flopy.mf6.modflow.mfims.ModflowIms(sim, pname="ims", complexity="SIMPLE", linear_acceleration="BICGSTAB")
+            ims = flopy.mf6.modflow.mfims.ModflowIms(sim,
+                                                     pname="ims",
+                                                     complexity="SIMPLE",
+                                                     linear_acceleration="BICGSTAB",
+                                                     )
         else:
             sim = flopy.mf6.MFSimulation.load(sim_ws=self.workspace, exe_name=self.exe)
             if not self.steady:
@@ -128,16 +133,20 @@ class ModelAbstract:
         join_pdf = join_pdf.astype({"row": int, "col": int, "index_right": int})
         return join_pdf[["index_right", "row", "col"] + attribute]
 
-    def _process_results(self, results, process_func):
+    def _process_results(self, results, process_func, next=False):
         std = []
         results = results.drop_duplicates()
-        for idx, row in results.iterrows():
+        for i, (idx, row) in enumerate(results.iterrows()):
             if type(self.model.modelgrid) is fgrid.StructuredGrid:
                 el = process_func(row, "row", "col")
                 if el:
                     std.append(el)
             else:
-                std.append(process_func(row, "index_right"))
+                if next:
+                    if results.iloc[i].name != results.iloc[-1].name:
+                        std.append(process_func([row, results.iloc[i + 1]], "index_right"))
+                else:
+                    std.append(process_func(row, "index_right"))
         return std
 
 
@@ -360,6 +369,8 @@ class ModelGrid(ModelAbstract):
                 if i == 0:
                     bot_data[i] = np.where(dem_data - bot_data[i] < self.min_thickness, dem_data - self.min_thickness,
                                            bot_data[i])
+                else:
+                    bot_data[i] = np.where(bot_data[i - 1] - bot_data[i] < 0.1, bot_data[i - 1] - 0.1, bot_data[i])
         # bot_data = [dem_data - bot["thick"] if type(bot) is dict else bot for bot in bot_data]
         elevations = np.array([dem_data, *bot_data])[::-1]
         prepare_elev = []
@@ -377,15 +388,11 @@ class ModelParameters(ModelAbstract):
 
     def _add_npf(self):
         npf = self.packages.get("npf")
-        hk = npf.get("k")
-        k33 = npf.get("k33")
-        icell = npf.get("icelltype")
+        hk = npf.pop("k")
         for i, k in enumerate(hk):
             if type(k) is str:
                 hk[i] = self.raster_resample(k)
-        npf = flopy.mf6.ModflowGwfnpf(self.model, save_flows=True, k=hk, icelltype=icell,
-                                      k33=k33 if k33 else None,
-                                      k33overk=True if k33 else None)
+        npf = flopy.mf6.ModflowGwfnpf(self.model, save_flows=True, k=hk, **npf)
 
     def _add_rch(self):
         rch = self.packages.get("rch")
@@ -511,10 +518,12 @@ class ModelSourcesSinks(ModelAbstract):
             if len(args) == 2:
                 if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
                     head = self.model.modelgrid.top[(row[args[1]], row[args[0]])]
-                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head, option["cond"]]
+                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head, option["cond"],
+                            f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
             else:
                 head = self.model.modelgrid.top[row[args[0]]]
-                return [(lay - 1, row[args[0]]), head, option["cond"]]
+                return [(lay - 1, row[args[0]]), head, option["cond"],
+                        f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
         step_std = {}
         for i, options in data.items():
@@ -568,6 +577,14 @@ class ModelSourcesSinks(ModelAbstract):
 
         return step_std
 
+    def pnt_along_line(self, line):
+        # FIXME: change distance_delta considering modelgrid space
+        distance_delta = 0.1
+        distances = np.arange(0, line.length, distance_delta)
+        points = [line.interpolate(distance) for distance in distances] + [line.boundary.geoms[1]]
+        # multipoint = unary_union(points)
+        return points
+
     @staticmethod
     def delete_duplicates_grid_package(example_list):
         unique_list = []
@@ -616,12 +633,37 @@ class ModelSourcesSinks(ModelAbstract):
             step_std[i] = all_results
         return step_std
 
+    def _add_hfb(self):
+        data = self.packages.get("hfb")
+
+        def hfb_func(row, *args):
+            if len(args) == 2:
+                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
+                    # return [(lay - 1, int(row[args[1]]), int(row[args[0]])), -row["q"]]
+                    pass
+            else:
+                return [[lay - 1, int(row[0][args[0]])], [lay - 1, int(row[1][args[0]])], hydchr]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                hydchr = option["hydchr"]
+                ln = gpd.read_file(os.path.join(self.model.model_ws, option.get("geometry")))
+                points = self.pnt_along_line(ln.iloc[0].geometry)
+                results = self._intersection_grid_attrs(points)
+                for lay in option["layers"]:
+                    all_results.extend(self._process_results(results, hfb_func, next=True))
+            step_std[i] = all_results
+        return step_std
+
     def add_packages(self):
         riv = self.packages.get("riv")
         ghb = self.packages.get("ghb")
         drn = self.packages.get("drn")
         chd = self.packages.get("chd")
         wel = self.packages.get("wel")
+        hfb = self.packages.get("hfb")
 
         if riv:
             if self.editing:
@@ -637,7 +679,7 @@ class ModelSourcesSinks(ModelAbstract):
             if self.editing:
                 self.model.remove_package("DRN")
             step_std = self._add_drn()
-            drn = flopy.mf6.ModflowGwfdrn(self.model, stress_period_data=step_std)
+            drn = flopy.mf6.ModflowGwfdrn(self.model, stress_period_data=step_std, boundnames=True)
         if chd:
             if self.editing:
                 self.model.remove_package("CHD")
@@ -648,6 +690,11 @@ class ModelSourcesSinks(ModelAbstract):
                 self.model.remove_package("WEL")
             step_std = self._add_wel()
             wel = flopy.mf6.ModflowGwfwel(self.model, stress_period_data=step_std)
+        if hfb:
+            if self.editing:
+                self.model.remove_package("HFB")
+            step_std = self._add_hfb()
+            hfb = flopy.mf6.ModflowGwfhfb(self.model, stress_period_data=step_std)
 
 
 class ModelObservations(ModelAbstract):
@@ -667,6 +714,13 @@ class ModelObservations(ModelAbstract):
             else:
                 return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]]))]
 
+        def get_lay_by_depth(row):
+            if row["depth"]:
+                for i, bot in enumerate(self.model.modelgrid.botm):
+                    if row["depth"] <= self.model.modelgrid.top[int(row["index_right"])] - bot[int(row["index_right"])]:
+                        return i + 1
+            return self.model.modelgrid.nlay
+
         obslist = []
         obsdict = {}
         for option in options:
@@ -679,14 +733,20 @@ class ModelObservations(ModelAbstract):
                 if type(option.get("layers")) is str:
                     lay = option.get("layers")
                     attributes.append(lay)
+                depth_at = option.get("depth")
                 obs = pd.read_csv(os.path.join(self.model.model_ws, option.get("data")))
+                obs = obs.loc[:, obs.columns != 'lay']
                 results = self._intersection_grid_attrs(obs, attribute=attributes)
                 if not name:
                     results["name"] = option.get("name")
                 else:
                     results.rename(columns={name: 'name'}, inplace=True)
-                if not lay:
+                if not lay and not depth_at:
                     results["lay"] = option.get("layers")
+                elif depth_at and not lay:
+                    results["lay"] = results.merge(obs, on="name").apply(get_lay_by_depth, axis=1)
+                    results_mod = results.merge(obs, on="name")
+                    results_mod[list(obs.columns) + ["lay"]].to_csv(os.path.join(self.model.model_ws, option.get("data")), index=False)
                 else:
                     results.rename(columns={lay: 'lay'}, inplace=True)
                 obslist = [obs_p[0] for obs_p in self._process_results(results, wel_obs_func)]
@@ -794,7 +854,7 @@ class ModelBuilder:
 
     def get_rch(self):
         rch = self.base.model.get_package("RCH")
-        return rch.recharge.array
+        return rch.recharge.array if rch else None
 
     def _create_dir(self):
         out_dir = os.path.join(self.base.model.model_ws, "output")
@@ -811,6 +871,7 @@ class ModelBuilder:
             model_obs = model_obs.transpose().reset_index()
             model_obs.columns = ["name", "head_model"]
             res = model_obs.merge(obs, on="name")
+            res["residual"] = res["head"] - res["head_model"]
             res.to_csv(os.path.join(directory, "residuals.csv"), index=False)
 
     def export(self):
@@ -820,7 +881,9 @@ class ModelBuilder:
         surf_arr = []
         ex_arr.extend([(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in range(per[1])])
         ex_arr.extend([(f"npf_lay_", self.get_npf())])
-        ex_arr.extend([(f"rch_lay_", self.get_rch())])
+        rch = self.get_rch()
+        if rch is not None:
+            ex_arr.extend([(f"rch_lay_", rch)])
         surf_arr.extend([(f"bot_lay_", self.base.model.modelgrid.botm)])
         surf_arr.extend([(f"top_lay_", [self.base.model.modelgrid.top])])
         for name, arr in ex_arr:

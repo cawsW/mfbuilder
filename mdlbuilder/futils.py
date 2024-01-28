@@ -4,6 +4,8 @@ import os.path
 import elevation
 import geopandas as gpd
 import osmnx as ox
+import numpy as np
+from pysheds.grid import Grid
 import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 
@@ -30,7 +32,7 @@ def rename_and_reproject(configs, crs):
         gdf.to_file(outputd, encoding="utf-8")
     
 
-def get_osm(extent, output, crs):
+def get_osm(extent, output, crs, tag="river"):
     """
     Extract river data from OSM based on the extent of a given shapefile.
 
@@ -44,16 +46,26 @@ def get_osm(extent, output, crs):
 
     bbox = gdf.total_bounds
     north, south, east, west = bbox[3], bbox[1], bbox[2], bbox[0]
-
-    tags = {'waterway': 'river', 'natural': "water"}
+    if tag == "river":
+        tags = {'waterway': 'river', 'natural': "water"}
+    elif tag == "stream":
+        tags = {'waterway': 'stream'}
+    elif tag == "quarry":
+        tags = {'landuse': 'quarry'}
 
     gdf_rivers = ox.geometries_from_bbox(north, south, east, west, tags)
     gdf_rivers = gdf_rivers.to_crs(crs)
-    poly = gdf_rivers[gdf_rivers["geometry"].geom_type.isin(["Polygon"])][["name", "geometry"]]
-    lines = gdf_rivers[gdf_rivers["geometry"].geom_type.isin(["LineString"])][["name", "geometry"]]
     path, ext = os.path.splitext(output)
-    poly.to_file(f"{path}_poly{ext}", index=False, encode="utf-8")
-    lines.to_file(f"{path}_line{ext}", index=False, encode="utf-8")
+    if tag == "river":
+        poly = gdf_rivers[gdf_rivers["geometry"].geom_type.isin(["Polygon"])][["name", "geometry"]]
+        poly.to_file(f"{path}_poly{ext}", index=False, encode="utf-8")
+    elif tag == "quarry":
+        poly = gdf_rivers[gdf_rivers["geometry"].geom_type.isin(["Polygon"])][["geometry"]]
+        poly.to_file(f"{path}_poly{ext}", index=False, encode="utf-8")
+    elif tag in ["river", "stream"]:
+        lines = gdf_rivers[gdf_rivers["geometry"].geom_type.isin(["LineString"])][["geometry"]]
+        print(lines)
+        lines.to_file(f"{path}_line{ext}", index=False, encode="utf-8")
 
 
 def get_srtm(extent, output, crs):
@@ -85,3 +97,24 @@ def get_srtm(extent, output, crs):
                     dst_transform=transform,
                     dst_crs=dst_crs,
                     resampling=Resampling.nearest)
+
+def get_stream_net(dem, x, y, output):
+    grid = Grid.from_raster(dem)
+    dem = grid.read_raster(dem)
+    dirmap = (64, 128, 1, 2, 4, 8, 16, 32)
+    pit_filled_dem = grid.fill_pits(dem)
+    flooded_dem = grid.fill_depressions(pit_filled_dem)
+    conditioned_dem = grid.resolve_flats(flooded_dem)
+    flowdir = grid.flowdir(conditioned_dem)
+    acc = grid.accumulation(flowdir)
+    x_snap, y_snap = grid.snap_to_mask(acc > 5000, (y, x))
+    catch = grid.catchment(x=x_snap, y=y_snap, fdir=flowdir, xytype='coordinate')
+    grid.clip_to(catch)
+    streams = grid.extract_river_network(flowdir, acc > 500, dirmap=dirmap)
+    def saveDict(dic, file):
+        f = open(file, 'w')
+        f.write(str(dic))
+        f.close()
+
+    # save geojson as separate file
+    saveDict(streams, output)

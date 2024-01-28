@@ -48,6 +48,9 @@ def generate_points_within_polygon(polygon, existing_points, grid_spacing=1.0, m
     # Generate candidate points within the bounding box
     x_coords = np.arange(minx, maxx, grid_spacing)
     y_coords = np.arange(miny, maxy, grid_spacing)
+    half_sp = grid_spacing / 2
+    x_coords_tr = np.arange(minx + half_sp, maxx - half_sp, grid_spacing)
+    y_coords_tr = np.arange(miny + half_sp, maxy - half_sp, grid_spacing)
 
     grid_points = []
     for x in x_coords:
@@ -56,6 +59,11 @@ def generate_points_within_polygon(polygon, existing_points, grid_spacing=1.0, m
             if polygon.contains(candidate):
                 grid_points.append((x, y))
 
+    for x in x_coords_tr:
+        for y in y_coords_tr:
+            candidate = Point(x, y)
+            if polygon.contains(candidate):
+                grid_points.append((x, y))
     # Combine points
     all_new_points = between_points + grid_points
 
