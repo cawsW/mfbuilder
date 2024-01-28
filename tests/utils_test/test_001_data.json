@@ -1,0 +1,16 @@
+{
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/alignments/Stvor_all_1% 10%_new.shp": "../novgorod/input/vector/gates.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/GEOModel/shp/Bottom N-Q gorizonta.shp": "../novgorod/input/vector/bot_q_lines.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/GEOModel/shp/MSK-52_well_combi_N-Q_DS.shp": "../novgorod/input/vector/bot_q_points.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/GEOModel/shp/MSK-52 boundary P2ur1-2.shp": "../novgorod/input/vector/area_p2ur.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/GEOModel/shp/MSK-52 boundary P3Kt.shp": "../novgorod/input/vector/area_p3kt.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/GEOModel/shp/MSK-52_well_combi_P2kt_DS.shp": "../novgorod/input/vector/bot_p3kt_point.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/GEOModel/shp/MSK-52_well_combi_P2ur_DS PRoba.shp": "../novgorod/input/vector/bot_p2ur_point.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/admin_level_6.shp": "../novgorod/input/vector/admin_border.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/MSK52_Boundary_1layer_NaQ.shp": "../novgorod/input/vector/area_q.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/MSK52_vodozabor_rayona.shp": "../novgorod/input/vector/intakes.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/MSK_52ABS_UGV_glubina.shp": "../novgorod/input/vector/river_stages.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/MSK_52_work_copy_Q.shp": "../novgorod/input/vector/water_levels.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/MSK_52_Zatoplenia_zona_all2.shp": "../novgorod/input/vector/flood_zones.shp",
+  "/home/hydro/PythonProjects/gwmodels/examples/nn/sources/vector/zone_kf.shp": "../novgorod/input/vector/coasts.shp"
+}
