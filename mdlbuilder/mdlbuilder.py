@@ -115,13 +115,13 @@ class ModelAbstract:
         return griddf
 
     def raster_resample(self, path, method="nearest"):
-        rio = Raster.load(os.path.join(self.model.model_ws, path))
+        rio = Raster.load(os.path.join(path))
         data = rio.resample_to_grid(self.model.modelgrid, band=rio.bands[0], method=method)
         return data
 
     def _intersection_grid_attrs(self, geometry, attribute=[]):
         if type(geometry) is str:
-            layer = gpd.read_file(os.path.join(self.model.model_ws, geometry))
+            layer = gpd.read_file(os.path.join(geometry))
         elif type(geometry) is pd.DataFrame:
             geometry.columns = [col.lower() for col in geometry.columns]
             layer = gpd.GeoDataFrame(geometry, geometry=gpd.points_from_xy(geometry.x, geometry.y))
@@ -164,7 +164,7 @@ class ModelGrid(ModelAbstract):
                     os.chmod(self.gridgen_exe, st.st_mode | stat.S_IEXEC)
                 else:
                     raise ValueError("No gridgen executable specified")
-                self.gridgen_ws = config.get("gridgen_workspace", os.path.join(self.model.model_ws, "grid"))
+                self.gridgen_ws = config.get("gridgen_workspace", os.path.join("grid"))
         else:
             raise ValueError("No grid type specified")
         if config.get("boundary"):
@@ -197,7 +197,7 @@ class ModelGrid(ModelAbstract):
 
     def check_boundary(self, boundary):
         if type(boundary) is str:
-            boundary = gpd.read_file(os.path.join(self.model.model_ws, boundary), crs=self.proj_string)
+            boundary = gpd.read_file(os.path.join(boundary), crs=self.proj_string)
         return boundary
 
     def __init_bounds(self):
@@ -269,7 +269,7 @@ class ModelGrid(ModelAbstract):
     def _add_refinement(self, geom, type_geom, usg):
         for data, level in geom:
             if type(data) is str:
-                layer = gpd.read_file(os.path.join(self.model.model_ws, data), crs=self.proj_string)
+                layer = gpd.read_file(os.path.join(data), crs=self.proj_string)
                 layer = layer.explode()
                 for row in layer.geometry.to_wkb():
                     obj = [Geometry(row).geojson["coordinates"]]
@@ -649,7 +649,7 @@ class ModelSourcesSinks(ModelAbstract):
             all_results = []
             for option in options:
                 hydchr = option["hydchr"]
-                ln = gpd.read_file(os.path.join(self.model.model_ws, option.get("geometry")))
+                ln = gpd.read_file(os.path.join(option.get("geometry")))
                 points = self.pnt_along_line(ln.iloc[0].geometry)
                 results = self._intersection_grid_attrs(points)
                 for lay in option["layers"]:
@@ -734,7 +734,7 @@ class ModelObservations(ModelAbstract):
                     lay = option.get("layers")
                     attributes.append(lay)
                 depth_at = option.get("depth")
-                obs = pd.read_csv(os.path.join(self.model.model_ws, option.get("data")))
+                obs = pd.read_csv(os.path.join(option.get("data")))
                 obs = obs.loc[:, obs.columns != 'lay']
                 results = self._intersection_grid_attrs(obs, attribute=attributes)
                 if not name:
@@ -746,7 +746,7 @@ class ModelObservations(ModelAbstract):
                 elif depth_at and not lay:
                     results["lay"] = results.merge(obs, on="name").apply(get_lay_by_depth, axis=1)
                     results_mod = results.merge(obs, on="name")
-                    results_mod[list(obs.columns) + ["lay"]].to_csv(os.path.join(self.model.model_ws, option.get("data")), index=False)
+                    results_mod[list(obs.columns) + ["lay"]].to_csv(os.path.join(option.get("data")), index=False)
                 else:
                     results.rename(columns={lay: 'lay'}, inplace=True)
                 obslist = [obs_p[0] for obs_p in self._process_results(results, wel_obs_func)]
@@ -857,7 +857,7 @@ class ModelBuilder:
         return rch.recharge.array if rch else None
 
     def _create_dir(self):
-        out_dir = os.path.join(self.base.model.model_ws, "output")
+        out_dir = os.path.join("output")
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
         return out_dir
@@ -865,7 +865,7 @@ class ModelBuilder:
     def get_observations(self, directory):
         well_heads = self.observations.packages.get("wells")
         if well_heads:
-            obs = pd.read_csv(os.path.join(self.base.model.model_ws, well_heads[0].get("data")))
+            obs = pd.read_csv(os.path.join(well_heads[0].get("data")))
             obs["name"] = "H_" + obs["name"].astype(str)
             model_obs = pd.read_csv(os.path.join(self.base.model.model_ws, f"{self.base.model.name}.obs.head.csv"))
             model_obs = model_obs.transpose().reset_index()
