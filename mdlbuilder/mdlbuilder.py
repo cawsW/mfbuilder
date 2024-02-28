@@ -20,31 +20,32 @@ from scipy.interpolate import griddata
 
 class ModelBase:
     def __init__(self, config: dict, editing):
-        if config.get("name"):
-            self.name = config.get("name")
-        else:
-            raise ValueError("No name specified")
-
-        if config.get("workspace"):
-            self.workspace = config.get("workspace")
-            if not os.path.exists(self.workspace):
-                os.mkdir(self.workspace)
-        else:
-            raise ValueError("No workspace specified")
-
-        if config.get("exe"):
-            self.exe = config.get("exe")
-            if not os.path.exists(self.exe):
-                raise ValueError(f"Executable {self.exe} does not exist")
-            else:
-                st = os.stat(self.exe)
-                os.chmod(self.exe, st.st_mode | stat.S_IEXEC)
-
-        self.version = config.get("version", "mf6")
-        self.steady = config.get("steady", True)
-        self.perioddata = config.get("perioddata")
-        self.units = config.get("units", "DAYS")
         self.editing = editing
+        if editing:
+            if config.get("name"):
+                self.name = config.get("name")
+            else:
+                raise ValueError("No name specified")
+
+            if config.get("workspace"):
+                self.workspace = config.get("workspace")
+                if not os.path.exists(self.workspace):
+                    os.mkdir(self.workspace)
+            else:
+                raise ValueError("No workspace specified")
+
+            if config.get("exe"):
+                self.exe = config.get("exe")
+                if not os.path.exists(self.exe):
+                    raise ValueError(f"Executable {self.exe} does not exist")
+                else:
+                    st = os.stat(self.exe)
+                    os.chmod(self.exe, st.st_mode | stat.S_IEXEC)
+
+            self.version = config.get("version", "mf6")
+            self.steady = config.get("steady", True)
+            self.perioddata = config.get("perioddata")
+            self.units = config.get("units", "DAYS")
         self.simulation, self.model = self.__init_model()
 
     def __init_model(self):
@@ -420,7 +421,8 @@ class ModelParameters(ModelAbstract):
         ic = flopy.mf6.ModflowGwfic(self.model, strt=options.get("head") if options else self.model.modelgrid.top)
 
     def add_packages(self):
-        self._add_ic()
+        if not self.editing:
+            self._add_ic()
         if self.packages.get("sto"):
             if self.editing:
                 self.model.remove_package("STO")
@@ -539,8 +541,12 @@ class ModelSourcesSinks(ModelAbstract):
                     results = self._intersection_grid_attrs(option.get("geometry"))
                 for lay in option["layers"]:
                     all_results.extend(self._process_results(results, drn_func))
-            step_std[i] = all_results
-
+            last_occurrences = {}
+            for item in all_results:
+                key = item[0]
+                last_occurrences[key] = item
+            unique_last_items = list(last_occurrences.values())
+            step_std[i] = unique_last_items
         return step_std
 
     def _add_chd(self):
@@ -701,8 +707,9 @@ class ModelObservations(ModelAbstract):
     def __init__(self, model, config: dict, editing):
         super().__init__(model)
         self.packages = config
-        if not editing:
-            self.add_packages()
+        if editing:
+            self.model.remove_package("OBS")
+        self.add_packages()
 
     def _add_wells_obs(self):
         options = self.packages.get("wells")
@@ -771,7 +778,8 @@ class ModelBuilder:
         if config.get("grid"):
             self.grid = ModelGrid(self.base.model, config.get("grid"), editing)
         else:
-            raise ValueError("No grid options specified")
+            if not editing:
+                raise ValueError("No grid options specified")
         if config.get("parameters"):
             self.parameters = ModelParameters(self.base.model, config.get("parameters"), editing)
         else:
