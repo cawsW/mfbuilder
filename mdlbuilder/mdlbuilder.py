@@ -1,6 +1,8 @@
 import os
 import stat
 import math
+from osgeo import gdal
+from osgeo import ogr, osr
 
 import numpy as np
 import pandas as pd
@@ -11,11 +13,13 @@ import flopy
 import flopy.discretization as fgrid
 from flopy.utils.gridgen import Gridgen
 from flopy.utils import GridIntersect, Raster
-from shapely.ops import unary_union
+from flopy.export.shapefile_utils import recarray2shp
+from flopy.utils.mflistfile import Mf6ListBudget
 
 import rasterio
 from rasterio.transform import from_origin
 from scipy.interpolate import griddata
+from flopy.utils.geometry import Polygon
 
 
 class ModelBase:
@@ -372,7 +376,7 @@ class ModelGrid(ModelAbstract):
                 if i == 0:
                     bot_data[i] = dem_data - bot["thick"]
                 else:
-                    bot_data[i] = bot_data[i-1] - bot["thick"]
+                    bot_data[i] = bot_data[i - 1] - bot["thick"]
             else:
                 bot_data[i] = bot.flatten()
                 if i == 0:
@@ -541,8 +545,10 @@ class ModelSourcesSinks(ModelAbstract):
             for option in options:
                 if option.get("geometry") == "all":
                     if type(self.model.modelgrid) is fgrid.StructuredGrid:
-                        results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in range(self.model.modelgrid.nrow)],
-                                               "col": [j for i in range(self.model.modelgrid.ncol) for j in range(self.model.modelgrid.nrow)]})
+                        results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in
+                                                        range(self.model.modelgrid.nrow)],
+                                                "col": [j for i in range(self.model.modelgrid.ncol) for j in
+                                                        range(self.model.modelgrid.nrow)]})
                     else:
                         results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d]})
                 else:
@@ -792,7 +798,8 @@ class ModelBuilder:
             self.parameters = ModelParameters(self.base.model, config.get("parameters"), editing)
         else:
             print("No parameters options specified")
-        self.sources = ModelSourcesSinks(self.base.model, config.get("sources"), editing) if config.get("sources") else None
+        self.sources = ModelSourcesSinks(self.base.model, config.get("sources"), editing) if config.get(
+            "sources") else None
         self.observations = ModelObservations(self.base.model, config.get("observations"), editing) if config.get(
             "observations") else None
         self.external = external
@@ -839,11 +846,11 @@ class ModelBuilder:
                                    np.linspace(self.grid.ymin - 10 * size, self.grid.ymax + 10 * size, num=num_cells_y))
         transform = from_origin(gridx.min(), gridy.max(), size, size)
         original_coords = np.array([centroids_x, centroids_y]).T
-
         interpolated_data = griddata(original_coords, array.flatten(), (gridx, gridy), method='linear')
-        interpolated_data = np.where(interpolated_data > 1e6, -999, interpolated_data)
+        interpolated_data = np.where(interpolated_data > 1e6, np.nan, interpolated_data)
+        raster_name = os.path.join(dir, f"{name}.tif")
         new_dataset = rasterio.open(
-         os.path.join(dir, f"{name}.tif"),
+            raster_name,
             'w',
             driver='GTiff',
             height=interpolated_data.shape[0],
@@ -856,6 +863,29 @@ class ModelBuilder:
         )
         new_dataset.write(interpolated_data[::-1], 1)
         new_dataset.close()
+        return raster_name
+
+    def create_contours(self, name, dir, rst_name):
+        indataset1 = gdal.Open(rst_name)
+        sr = osr.SpatialReference(indataset1.GetProjection())
+        in1 = indataset1.GetRasterBand(1)
+        array = in1.ReadAsArray()
+        demMax = np.nanmax(array)
+        demMin = np.nanmin(array)
+        contourPath = os.path.join(dir, f"{name}.shp")
+        contourDs = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(contourPath)
+        contourShp = contourDs.CreateLayer('contour', sr)
+
+        # define fields of id and elev
+        fieldDef = ogr.FieldDefn("ID", ogr.OFTInteger)
+        contourShp.CreateField(fieldDef)
+        fieldDef = ogr.FieldDefn("elev", ogr.OFTReal)
+        contourShp.CreateField(fieldDef)
+        conNum = 10
+        conList = [round(x, 2) for x in np.linspace(demMin, demMax, conNum)]
+        gdal.ContourGenerate(in1, 0, 0, conList, 0, 0.,
+                             contourShp, 0, 1)
+        contourDs.Destroy()
 
     def get_heads(self, per):
         headfile = f"{self.base.model.name}.hds"
@@ -872,8 +902,9 @@ class ModelBuilder:
         rch = self.base.model.get_package("RCH")
         return rch.recharge.array if rch else None
 
-    def _create_dir(self):
-        out_dir = os.path.join("output")
+    @staticmethod
+    def _create_dir(path):
+        out_dir = os.path.join(path)
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
         return out_dir
@@ -888,14 +919,19 @@ class ModelBuilder:
             model_obs.columns = ["name", "head_model"]
             res = model_obs.merge(obs, on="name")
             res["residual"] = res["head"] - res["head_model"]
+            res["rmse"] = ""
+            res["rmse"][0] = (res.residual ** 2).mean() ** .5
             res.to_csv(os.path.join(directory, "residuals.csv"), index=False)
 
-    def export(self):
-        dir = self._create_dir()
+    def export_rasters(self):
+        dir_rasters = self._create_dir("output/rasters")
+        dir_contours = self._create_dir("output/rasters/contours")
         perioddata = self.base.simulation.get_package("tdis").perioddata.array
         ex_arr = []
         surf_arr = []
-        ex_arr.extend([(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in range(per[1])])
+        ex_arr.extend(
+            [(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in
+             range(per[1])])
         ex_arr.extend([(f"npf_lay_", self.get_npf())])
         rch = self.get_rch()
         if rch is not None:
@@ -904,10 +940,34 @@ class ModelBuilder:
         surf_arr.extend([(f"top_lay_", [self.base.model.modelgrid.top])])
         for name, arr in ex_arr:
             for lay, la in enumerate(arr):
-                self.create_raster(50, la, f"{name}{lay}", dir)
+                raster_name = self.create_raster(50, la, f"{name}{lay}", dir_rasters)
+                self.create_contours(f"{name}{lay}", dir_contours, raster_name)
 
         for name, arr in surf_arr:
             for lay, la in enumerate(arr):
-                self.create_raster(50, la, f"{name}{lay}", dir)
+                raster_name = self.create_raster(50, la, f"{name}{lay}", dir_rasters)
+                self.create_contours(f"{name}{lay}", dir_contours, raster_name)
 
-        self.get_observations(dir)
+    def export_vectors(self):
+        dir_vectors = self._create_dir("output/vectors/")
+        self.get_observations(dir_vectors)
+        self.base.model.npf.export(os.path.join(dir_vectors, "npf.shp"))
+        self.base.model.rch.export(os.path.join(dir_vectors, "rch.shp"))
+
+        drnstd = self.base.model.drn.stress_period_data.get_dataframe()[0]
+        self.dataframe_to_geom(drnstd, os.path.join(dir_vectors, "drn.shp"))
+        rivstd = self.base.model.riv.stress_period_data.get_dataframe()[0]
+        self.dataframe_to_geom(rivstd, os.path.join(dir_vectors, "riv.shp"))
+
+    def export_other(self):
+        dir_others = self._create_dir("output/others/")
+        mf_list = Mf6ListBudget(os.path.join(self.base.model.model_ws, f"{self.base.model.name}.lst"))
+        incrementaldf, cumulativedf = mf_list.get_dataframes()
+        cumulativedf.to_csv(os.path.join(dir_others, "balances.csv"), index=False)
+
+    def dataframe_to_geom(self, df, name):
+        vertices = []
+        for cell in df.cell:
+            vertices.append(self.base.model.modelgrid.get_cell_vertices(cell))
+        polygons = [Polygon(vrt) for vrt in vertices]
+        recarray2shp(df.to_records(), geoms=polygons, shpname=name, crs=self.grid.proj_string)
