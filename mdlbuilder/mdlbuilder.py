@@ -21,31 +21,30 @@ from scipy.interpolate import griddata
 class ModelBase:
     def __init__(self, config: dict, editing):
         self.editing = editing
-        if editing:
-            if config.get("name"):
-                self.name = config.get("name")
+        if config.get("name"):
+            self.name = config.get("name")
+        else:
+            raise ValueError("No name specified")
+
+        if config.get("workspace"):
+            self.workspace = config.get("workspace")
+            if not os.path.exists(self.workspace):
+                os.mkdir(self.workspace)
+        else:
+            raise ValueError("No workspace specified")
+
+        if config.get("exe"):
+            self.exe = config.get("exe")
+            if not os.path.exists(self.exe):
+                raise ValueError(f"Executable {self.exe} does not exist")
             else:
-                raise ValueError("No name specified")
+                st = os.stat(self.exe)
+                os.chmod(self.exe, st.st_mode | stat.S_IEXEC)
 
-            if config.get("workspace"):
-                self.workspace = config.get("workspace")
-                if not os.path.exists(self.workspace):
-                    os.mkdir(self.workspace)
-            else:
-                raise ValueError("No workspace specified")
-
-            if config.get("exe"):
-                self.exe = config.get("exe")
-                if not os.path.exists(self.exe):
-                    raise ValueError(f"Executable {self.exe} does not exist")
-                else:
-                    st = os.stat(self.exe)
-                    os.chmod(self.exe, st.st_mode | stat.S_IEXEC)
-
-            self.version = config.get("version", "mf6")
-            self.steady = config.get("steady", True)
-            self.perioddata = config.get("perioddata")
-            self.units = config.get("units", "DAYS")
+        self.version = config.get("version", "mf6")
+        self.steady = config.get("steady", True)
+        self.perioddata = config.get("perioddata")
+        self.units = config.get("units", "DAYS")
         self.simulation, self.model = self.__init_model()
 
     def __init_model(self):
@@ -73,6 +72,8 @@ class ModelBase:
                                                      pname="ims",
                                                      complexity="SIMPLE",
                                                      linear_acceleration="BICGSTAB",
+                                                     outer_dvclose=0.0001,
+                                                     inner_dvclose=0.00001,
                                                      )
         else:
             sim = flopy.mf6.MFSimulation.load(sim_ws=self.workspace, exe_name=self.exe)
@@ -82,6 +83,13 @@ class ModelBase:
                     tdis = flopy.mf6.ModflowTdis(
                         sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
                     )
+                    ims = flopy.mf6.modflow.mfims.ModflowIms(sim,
+                                                             pname="ims",
+                                                             complexity="SIMPLE",
+                                                             linear_acceleration="BICGSTAB",
+                                                             outer_dvclose=0.0001,
+                                                             inner_dvclose=0.00001,
+                                                             )
             gwf = sim.get_model(self.name)
         return sim, gwf
 
