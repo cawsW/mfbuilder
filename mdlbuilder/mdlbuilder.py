@@ -536,6 +536,11 @@ class ModelSourcesSinks(ModelAbstract):
                             f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
             else:
                 head = self.model.modelgrid.top[row[args[0]]]
+                if type(option["stage"]) is not str:
+                    head = option["stage"]
+                else:
+                    if option["stage"] != "top":
+                        head += float(option["stage"].replace("top", ""))
                 return [(lay - 1, row[args[0]]), head, option["cond"],
                         f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
@@ -550,7 +555,8 @@ class ModelSourcesSinks(ModelAbstract):
                                                 "col": [j for i in range(self.model.modelgrid.ncol) for j in
                                                         range(self.model.modelgrid.nrow)]})
                     else:
-                        results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d]})
+                        results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d], "name": 100})
+                        results.set_index("name", inplace=True)
                 else:
                     results = self._intersection_grid_attrs(option.get("geometry"))
                 for lay in option["layers"]:
