@@ -73,7 +73,7 @@ def get_srtm(extent, output, crs):
     boundary_wgs = boundary.to_crs("EPSG:4326")
     bounds = boundary_wgs.total_bounds
     basename = os.path.join(os.getcwd(), output)
-    elevation.clip(bounds=bounds, output=basename, product='SRTM3')
+    elevation.clip(bounds=bounds, output=basename, product='SRTM1')
 
     dst_crs = boundary.crs  # Define the target coordinate system (here using WGS84)
 
