@@ -75,6 +75,9 @@ class ModelBase:
             ims = flopy.mf6.modflow.mfims.ModflowIms(sim,
                                                      pname="ims",
                                                      complexity="SIMPLE",
+                                                     inner_maximum=50,
+                                                     outer_maximum=25,
+                                                     backtracking_number=0,
                                                      linear_acceleration="BICGSTAB",
                                                      outer_dvclose=0.0001,
                                                      inner_dvclose=0.00001,
@@ -90,6 +93,9 @@ class ModelBase:
                     ims = flopy.mf6.modflow.mfims.ModflowIms(sim,
                                                              pname="ims",
                                                              complexity="SIMPLE",
+                                                             inner_maximum=50,
+                                                             outer_maximum=25,
+                                                             backtracking_number=0,
                                                              linear_acceleration="BICGSTAB",
                                                              outer_dvclose=0.0001,
                                                              inner_dvclose=0.00001,
@@ -196,17 +202,18 @@ class ModelGrid(ModelAbstract):
             self.top = config.get("top")
         else:
             raise ValueError("No top specified")
-        if config.get("botm"):
+        if type(config.get("botm")) is list:
             self.botm = config.get("botm")
-            if len(self.botm) != self.nlay:
+            if len(self.botm) != self.nlay and not editing:
                 raise ValueError("Number of botm layers does not match number of layers")
         else:
             raise ValueError("No bottom specified")
         self.buffer = config.get("buffer", False)
         self.xmin, self.ymin, self.xmax, self.ymax = self.__init_bounds()
         self.min_thickness = config.get("min_thickness", 0.1)
-        if not editing:
-            self.create_dis()
+        self.editing = editing
+        # if not editing:
+        self.create_dis()
 
     def check_boundary(self, boundary):
         if type(boundary) is str:
@@ -234,7 +241,8 @@ class ModelGrid(ModelAbstract):
         n_row, n_col, delr, delc = self._init_size()
         sgr = fgrid.StructuredGrid(
             delc, delr, top=None, botm=None, xoff=self.xmin, yoff=self.ymin, angrot=0,
-            prj=self.proj_string, nlay=self.nlay
+            # prj=self.proj_string,
+            nlay=self.nlay
         )
         ix = GridIntersect(sgr, method="vertex")
         if type(self.boundary) is gpd.GeoDataFrame:
@@ -259,6 +267,9 @@ class ModelGrid(ModelAbstract):
                 self.botm[i] = self.raster_resample(bot)
             elif type(bot) is dict:
                 self.botm[i]["thick"] = bot["thick"] * np.ones(self.model.modelgrid.ncpl)
+        if self.editing and len(self.botm) != self.nlay:
+            for i in range(len(self.botm), self.nlay):
+                self.botm.append(self.model.modelgrid.botm[i])
         return self.botm
 
     def _temp_simulation(self):
@@ -310,46 +321,51 @@ class ModelGrid(ModelAbstract):
         return g.get_gridprops_disv()
 
     def create_dis(self):
-        if self.typegrd == "structured":
-            n_row, n_col, idomain = self._clip_structure()
-            disv = flopy.mf6.modflow.mfgwfdis.ModflowGwfdis(
-                self.model,
-                pname="dis",
-                nlay=self.nlay,
-                nrow=n_col,
-                ncol=n_row,
-                delr=self.cell_size,
-                delc=self.cell_size,
-                top=0,
-                botm=[-10 * i for i in range(self.nlay)],
-                idomain=idomain,
-                xorigin=self.xmin, yorigin=self.ymin, angrot=0
-            )
-        else:
-            gridprops = self._gridgen()
-            ncpl = gridprops["ncpl"]
-            top = gridprops["top"]
-            botm = gridprops["botm"]
-            nvert = gridprops["nvert"]
-            vertices = gridprops["vertices"]
-            cell2d = gridprops["cell2d"]
-            disv = flopy.mf6.modflow.mfgwfdisv.ModflowGwfdisv(
-                self.model,
-                nlay=self.nlay,
-                ncpl=ncpl,
-                top=top,
-                botm=botm,
-                nvert=nvert,
-                vertices=vertices,
-                cell2d=cell2d,
-                xorigin=self.xmin, yorigin=self.ymin, angrot=0
-            )
-        if not all(isinstance(x, float) for x in self.botm):
+        if not self.editing:
+            if self.typegrd == "structured":
+                n_row, n_col, idomain = self._clip_structure()
+                disv = flopy.mf6.modflow.mfgwfdis.ModflowGwfdis(
+                    self.model,
+                    pname="dis",
+                    nlay=self.nlay,
+                    nrow=n_col,
+                    ncol=n_row,
+                    delr=self.cell_size,
+                    delc=self.cell_size,
+                    top=0,
+                    botm=[-10 * i for i in range(self.nlay)],
+                    idomain=idomain,
+                    xorigin=self.xmin, yorigin=self.ymin, angrot=0
+                )
+            else:
+                gridprops = self._gridgen()
+                ncpl = gridprops["ncpl"]
+                top = gridprops["top"]
+                botm = gridprops["botm"]
+                nvert = gridprops["nvert"]
+                vertices = gridprops["vertices"]
+                cell2d = gridprops["cell2d"]
+                disv = flopy.mf6.modflow.mfgwfdisv.ModflowGwfdisv(
+                    self.model,
+                    nlay=self.nlay,
+                    ncpl=ncpl,
+                    top=top,
+                    botm=botm,
+                    nvert=nvert,
+                    vertices=vertices,
+                    cell2d=cell2d,
+                    xorigin=self.xmin, yorigin=self.ymin, angrot=0
+                )
+        if not all(isinstance(x, float) for x in self.botm) or len(self.botm) == 0:
+            if self.editing:
+                disv = self.model.get_package("DISV")
             idomain, elevations, dem = self.form_idomain()
             disv.idomain = idomain
             disv.top = dem
             disv.botm = elevations
         else:
+            if self.editing:
+                disv = self.model.get_package("DISV")
             disv.top = self.top
             disv.botm = self.botm
 
@@ -495,7 +511,13 @@ class ModelSourcesSinks(ModelAbstract):
                 for lay in option["layers"]:
                     zz = 0
                     all_results.extend(self._process_results(results, river_func))
-            step_std[i] = all_results
+            last_occurrences = {}
+
+            for item in all_results:
+                key = item[0]
+                last_occurrences[key] = item
+            unique_last_items = list(last_occurrences.values())
+            step_std[i] = unique_last_items
         return step_std
 
     def _add_ghb(self):
@@ -503,9 +525,11 @@ class ModelSourcesSinks(ModelAbstract):
 
         def ghb_func(row, *args):
             if len(args) == 2:
-                return [(lay - 1, int(row[args[1]]), int(row[args[0]])), row["head"], option["cond"]]
+                return [(lay - 1, int(row[args[1]]), int(row[args[0]])), row["head"], option["cond"][li],
+                        f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
             else:
-                return [(lay - 1, int(row[args[0]])), row["head"], option["cond"]]
+                return [(lay - 1, int(row[args[0]])), row["head"], option["cond"][li],
+                        f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
         step_std = {}
         for i, options in data.items():
@@ -517,11 +541,16 @@ class ModelSourcesSinks(ModelAbstract):
                     cond = option.get("head")
                     attributes.append(cond)
                 results = self._intersection_grid_attrs(option.get("geometry"), attributes)
-                if not cond:
-                    results["head"] = option.get("head")
-                for lay in option["layers"]:
+                for li, lay in enumerate(option["layers"]):
+                    if not cond:
+                        heads = option.get("head")
+                        if type(heads) is list:
+                            results["head"] = heads[li]
+                        else:
+                            results["head"] = heads
                     all_results.extend(self._process_results(results, ghb_func))
             step_std[i] = all_results
+            print(all_results)
 
         return step_std
 
@@ -540,33 +569,49 @@ class ModelSourcesSinks(ModelAbstract):
                     head = option["stage"]
                 else:
                     if option["stage"] != "top":
-                        head += float(option["stage"].replace("top", ""))
+                        if "top" in option["stage"]:
+                            head += float(option["stage"].replace("top", ""))
+                        else:
+                            head = stages[int(row[args[0]])]
                 return [(lay - 1, row[args[0]]), head, option["cond"],
                         f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
         step_std = {}
         for i, options in data.items():
-            all_results = []
-            for option in options:
-                if option.get("geometry") == "all":
-                    if type(self.model.modelgrid) is fgrid.StructuredGrid:
-                        results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in
-                                                        range(self.model.modelgrid.nrow)],
-                                                "col": [j for i in range(self.model.modelgrid.ncol) for j in
-                                                        range(self.model.modelgrid.nrow)]})
-                    else:
-                        results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d], "name": 100})
-                        results.set_index("name", inplace=True)
+            if type(i) is int:
+                if options:
+                    all_results = []
+                    if data.get("add"):
+                        std_ex = self.model.drn.stress_period_data.data[0].tolist()
+                        self.model.remove_package("DRN")
+                        all_results.extend(std_ex)
+                    for option in options:
+                        if type(option.get("stage")) is str and "top" not in option.get("stage"):
+                            stages = self.raster_resample(option.get("stage"))
+                        else:
+                            stages = option.get("stage")
+                        if option.get("geometry") == "all":
+                            if type(self.model.modelgrid) is fgrid.StructuredGrid:
+                                results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in
+                                                                range(self.model.modelgrid.nrow)],
+                                                        "col": [j for i in range(self.model.modelgrid.ncol) for j in
+                                                                range(self.model.modelgrid.nrow)]})
+                            else:
+                                results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d], "name": 100})
+                                results.set_index("name", inplace=True)
+                        else:
+                            results = self._intersection_grid_attrs(option.get("geometry"))
+                        for lay in option["layers"]:
+                            all_results.extend(self._process_results(results, drn_func))
+                    last_occurrences = {}
+
+                    for item in all_results:
+                        key = item[0]
+                        last_occurrences[key] = item
+                    unique_last_items = list(last_occurrences.values())
+                    step_std[i] = unique_last_items
                 else:
-                    results = self._intersection_grid_attrs(option.get("geometry"))
-                for lay in option["layers"]:
-                    all_results.extend(self._process_results(results, drn_func))
-            last_occurrences = {}
-            for item in all_results:
-                key = item[0]
-                last_occurrences[key] = item
-            unique_last_items = list(last_occurrences.values())
-            step_std[i] = unique_last_items
+                    step_std[i] = {}
         return step_std
 
     def _add_chd(self):
@@ -575,13 +620,13 @@ class ModelSourcesSinks(ModelAbstract):
         def chd_func(row, *args):
             if len(args) == 2:
                 if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
-                    if type(heads) is not int or type(heads) is not float:
+                    if type(heads) is not int and type(heads) is not float:
                         head = heads[(row[args[1]], row[args[0]])]
                     else:
                         head = heads
                     return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head]
             else:
-                if type(heads) is not int or type(heads) is not float:
+                if type(heads) is not int and type(heads) is not float:
                     head = heads[row[args[0]]]
                 else:
                     head = heads
@@ -700,10 +745,11 @@ class ModelSourcesSinks(ModelAbstract):
             if self.editing:
                 self.model.remove_package("GHB")
             step_std = self._add_ghb()
-            ghb = flopy.mf6.ModflowGwfghb(self.model, stress_period_data=step_std)
+            ghb = flopy.mf6.ModflowGwfghb(self.model, stress_period_data=step_std, boundnames=True)
         if drn:
             if self.editing:
-                self.model.remove_package("DRN")
+                if not drn.get("add"):
+                    self.model.remove_package("DRN")
             step_std = self._add_drn()
             drn = flopy.mf6.ModflowGwfdrn(self.model, stress_period_data=step_std, boundnames=True)
         if chd:
@@ -737,9 +783,9 @@ class ModelObservations(ModelAbstract):
         def wel_obs_func(row, *args):
             if len(args) == 2:
                 if self.model.modelgrid.idomain[0][(row[args[1]], row[args[0]])] == 1:
-                    return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[1]], row[args[0]]))]
+                    return [(f"h{row['name']}", "HEAD", (row["lay"] - 1, row[args[1]], row[args[0]]))]
             else:
-                return [(f"h_{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]]))]
+                return [(f"h{row['name']}", "HEAD", (row["lay"] - 1, row[args[0]]))]
 
         def get_lay_by_depth(row):
             if row["depth"]:
@@ -919,9 +965,10 @@ class ModelBuilder:
         well_heads = self.observations.packages.get("wells")
         if well_heads:
             obs = pd.read_csv(os.path.join(well_heads[0].get("data")))
-            obs["name"] = "H_" + obs["name"].astype(str)
+            obs["name"] = "H" + obs["name"].astype(str)
             model_obs = pd.read_csv(os.path.join(self.base.model.model_ws, f"{self.base.model.name}.obs.head.csv"))
             model_obs = model_obs.transpose().reset_index()
+            print(model_obs)
             model_obs.columns = ["name", "head_model"]
             res = model_obs.merge(obs, on="name")
             res["residual"] = res["head"] - res["head_model"]
@@ -959,11 +1006,16 @@ class ModelBuilder:
         self.get_observations(dir_vectors)
         self.base.model.npf.export(os.path.join(dir_vectors, "npf.shp"))
         self.base.model.rch.export(os.path.join(dir_vectors, "rch.shp"))
-
-        drnstd = self.base.model.drn.stress_period_data.get_dataframe()[0]
-        self.dataframe_to_geom(drnstd, os.path.join(dir_vectors, "drn.shp"))
-        rivstd = self.base.model.riv.stress_period_data.get_dataframe()[0]
-        self.dataframe_to_geom(rivstd, os.path.join(dir_vectors, "riv.shp"))
+        pcklist = [pn.upper().split('_')[0] for p in self.base.model.packagelist for pn in p.name]
+        if "DRN" in pcklist:
+            drnstd = self.base.model.drn.stress_period_data.get_dataframe()[0]
+            self.dataframe_to_geom(drnstd, os.path.join(dir_vectors, "drn.shp"))
+        if "RIV" in pcklist:
+            rivstd = self.base.model.riv.stress_period_data.get_dataframe()[0]
+            self.dataframe_to_geom(rivstd, os.path.join(dir_vectors, "riv.shp"))
+        if "GHB" in pcklist:
+            ghbstd = self.base.model.ghb.stress_period_data.get_dataframe()[0]
+            self.dataframe_to_geom(ghbstd, os.path.join(dir_vectors, "ghb.shp"))
 
     def export_other(self):
         dir_others = self._create_dir("output/others/")
