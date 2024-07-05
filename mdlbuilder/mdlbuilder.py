@@ -15,6 +15,7 @@ from flopy.utils.gridgen import Gridgen
 from flopy.utils import GridIntersect, Raster
 from flopy.export.shapefile_utils import recarray2shp
 from flopy.utils.mflistfile import Mf6ListBudget
+from flopy.discretization import StructuredGrid, UnstructuredGrid, VertexGrid
 
 import rasterio
 from rasterio.transform import from_origin
@@ -47,7 +48,7 @@ class ModelBase:
 
         self.version = config.get("version", "mf6")
         self.steady = config.get("steady", True)
-        self.perioddata = config.get("perioddata")
+        self.perioddata = config.get("perioddata", [(1.0, 1, 1.0)])
         self.units = config.get("units", "DAYS")
         self.simulation, self.model = self.__init_model()
 
@@ -218,6 +219,8 @@ class ModelGrid(ModelAbstract):
     def check_boundary(self, boundary):
         if type(boundary) is str:
             boundary = gpd.read_file(os.path.join(boundary), crs=self.proj_string)
+        elif type(boundary) is list:
+            boundary = Polygon(boundary)
         return boundary
 
     def __init_bounds(self):
@@ -249,7 +252,7 @@ class ModelGrid(ModelAbstract):
             result = ix.intersects(self.boundary.geometry[0])
         else:
             result = ix.intersects(self.boundary)
-        idomain = np.zeros((self.nlay, n_col, n_row), dtype=np.int)
+        idomain = np.zeros((self.nlay, n_col, n_row), dtype=np.int64)
         for lay in range(self.nlay):
             for cellid in result.cellids:
                 idomain[lay][cellid] = 1
@@ -472,6 +475,103 @@ class ModelSourcesSinks(ModelAbstract):
         self.editing = editing
         self.add_packages()
 
+    def _ss_geometry(self, geometry):
+        if type(self.model.modelgrid) is StructuredGrid:
+            if type(geometry) is dict:
+                if geometry.get("row") is not None:
+                    ncol = self.model.modelgrid.ncol
+                    ss_geo = zip([geometry.get("row")] * ncol, range(ncol))
+                    results = pd.DataFrame(ss_geo, columns=["row", "col"])
+                elif geometry.get("col") is not None:
+                    nrow = self.model.modelgrid.nrow
+                    ss_geo = zip(range(nrow), [geometry.get("col")] * nrow)
+                    results = pd.DataFrame(ss_geo, columns=["row", "col"])
+            elif type(geometry) is str:
+                if os.path.isfile(geometry):
+                    results = self._intersection_grid_attrs(geometry)
+        return results
+
+    def _add_source_sinks(self, pckg):
+        def _ss_parameters(params):
+            for name in params:
+                std_atr = params[name]
+                if type(std_atr) is str:
+                    if os.path.isdir(std_atr):
+                        pass
+                elif type(std_atr) is list:
+                    pass
+                elif type(std_atr) is int or type(std_atr) is float:
+                    results[name] = std_atr
+
+        data = self.packages.get(pckg)
+        step_std = {}
+        for i, spd in data.items():
+            all_results = []
+            for option in spd:
+                geometry = option.pop("geometry")
+                layers = option.pop("layers")
+                results = self._ss_geometry(geometry)
+                if option.get("bname"):
+                    bname = option.pop("bname")
+                    results["bname"] = bname
+                _ss_parameters(option)
+                for li, lay in enumerate(layers):
+                    if type(self.model.modelgrid) is StructuredGrid:
+                        all_results.extend([
+                            [(lay - 1, row.row, row.col,), *row[list(option.keys())], row["bname"]]
+                            for idx, row in results.iterrows()
+                        ])
+            step_std[i] = all_results
+            print(step_std)
+        return step_std
+
+            #     results = self._intersection_grid_attrs(option.get("geometry"))
+            #     if type(option.get("head")) is str:
+            #         heads = self.raster_resample(option.get("head"))
+            #     else:
+            #         heads = option.get("head")
+            #     for lay in option["layers"]:
+            #         all_results.extend(self._process_results(results, chd_func))
+            # all_results = self.delete_duplicates_grid_package(all_results)
+            # step_std[i] = all_results
+
+    def _add_chd_test(self):
+        return self._add_source_sinks("chd")
+
+    def _add_chd(self):
+        data = self.packages.get("chd")
+
+        def chd_func(row, *args):
+            if len(args) == 2:
+                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
+                    if type(heads) is not int and type(heads) is not float:
+                        head = heads[(row[args[1]], row[args[0]])]
+                    else:
+                        head = heads
+                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head]
+            else:
+                if type(heads) is not int and type(heads) is not float:
+                    head = heads[row[args[0]]]
+                else:
+                    head = heads
+                return [(lay - 1, int(row[args[0]])), head]
+
+        step_std = {}
+        for i, options in data.items():
+            all_results = []
+            for option in options:
+                results = self._intersection_grid_attrs(option.get("geometry"))
+                if type(option.get("head")) is str:
+                    heads = self.raster_resample(option.get("head"))
+                else:
+                    heads = option.get("head")
+                for lay in option["layers"]:
+                    all_results.extend(self._process_results(results, chd_func))
+            all_results = self.delete_duplicates_grid_package(all_results)
+            step_std[i] = all_results
+
+        return step_std
+
     def _add_river(self):
         data = self.packages.get("riv")
 
@@ -561,7 +661,7 @@ class ModelSourcesSinks(ModelAbstract):
             if len(args) == 2:
                 if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
                     head = self.model.modelgrid.top[(row[args[1]], row[args[0]])]
-                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head, option["cond"],
+                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head, option["cond"][li] if type(option["cond"]) is list else option["cond"],
                             f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
             else:
                 head = self.model.modelgrid.top[row[args[0]]]
@@ -573,36 +673,39 @@ class ModelSourcesSinks(ModelAbstract):
                             head += float(option["stage"].replace("top", ""))
                         else:
                             head = stages[int(row[args[0]])]
-                return [(lay - 1, row[args[0]]), head, option["cond"],
+                return [(lay - 1, row[args[0]]), head,  option["cond"][li] if type(option["cond"]) is list else option["cond"],
                         f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
 
         step_std = {}
+        if data.get("add"):
+            std_ex = self.model.drn.stress_period_data.data[0].tolist()
+            self.model.remove_package("DRN")
+
         for i, options in data.items():
             if type(i) is int:
                 if options:
                     all_results = []
                     if data.get("add"):
-                        std_ex = self.model.drn.stress_period_data.data[0].tolist()
-                        self.model.remove_package("DRN")
                         all_results.extend(std_ex)
                     for option in options:
-                        if type(option.get("stage")) is str and "top" not in option.get("stage"):
-                            stages = self.raster_resample(option.get("stage"))
-                        else:
-                            stages = option.get("stage")
-                        if option.get("geometry") == "all":
-                            if type(self.model.modelgrid) is fgrid.StructuredGrid:
-                                results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in
-                                                                range(self.model.modelgrid.nrow)],
-                                                        "col": [j for i in range(self.model.modelgrid.ncol) for j in
-                                                                range(self.model.modelgrid.nrow)]})
+                        if not option.get("const"):
+                            if type(option.get("stage")) is str and "top" not in option.get("stage"):
+                                stages = self.raster_resample(option.get("stage"))
                             else:
-                                results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d], "name": 100})
-                                results.set_index("name", inplace=True)
-                        else:
-                            results = self._intersection_grid_attrs(option.get("geometry"))
-                        for lay in option["layers"]:
-                            all_results.extend(self._process_results(results, drn_func))
+                                stages = option.get("stage")
+                            if option.get("geometry") == "all":
+                                if type(self.model.modelgrid) is fgrid.StructuredGrid:
+                                    results = pd.DataFrame({"row": [i for i in range(self.model.modelgrid.ncol) for j in
+                                                                    range(self.model.modelgrid.nrow)],
+                                                            "col": [j for i in range(self.model.modelgrid.ncol) for j in
+                                                                    range(self.model.modelgrid.nrow)]})
+                                else:
+                                    results = pd.DataFrame({"index_right": [cell[0] for cell in self.model.modelgrid.cell2d], "name": 100})
+                                    results.set_index("name", inplace=True)
+                            else:
+                                results = self._intersection_grid_attrs(option.get("geometry"))
+                            for li, lay in enumerate(option["layers"]):
+                                all_results.extend(self._process_results(results, drn_func))
                     last_occurrences = {}
 
                     for item in all_results:
@@ -612,40 +715,6 @@ class ModelSourcesSinks(ModelAbstract):
                     step_std[i] = unique_last_items
                 else:
                     step_std[i] = {}
-        return step_std
-
-    def _add_chd(self):
-        data = self.packages.get("chd")
-
-        def chd_func(row, *args):
-            if len(args) == 2:
-                if self.model.modelgrid.idomain[0][(int(row[args[1]]), int(row[args[0]]))] == 1:
-                    if type(heads) is not int and type(heads) is not float:
-                        head = heads[(row[args[1]], row[args[0]])]
-                    else:
-                        head = heads
-                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), head]
-            else:
-                if type(heads) is not int and type(heads) is not float:
-                    head = heads[row[args[0]]]
-                else:
-                    head = heads
-                return [(lay - 1, int(row[args[0]])), head]
-
-        step_std = {}
-        for i, options in data.items():
-            all_results = []
-            for option in options:
-                results = self._intersection_grid_attrs(option.get("geometry"))
-                if type(option.get("head")) is str:
-                    heads = self.raster_resample(option.get("head"))
-                else:
-                    heads = option.get("head")
-                for lay in option["layers"]:
-                    all_results.extend(self._process_results(results, chd_func))
-            all_results = self.delete_duplicates_grid_package(all_results)
-            step_std[i] = all_results
-
         return step_std
 
     def pnt_along_line(self, line):
@@ -755,8 +824,8 @@ class ModelSourcesSinks(ModelAbstract):
         if chd:
             if self.editing:
                 self.model.remove_package("CHD")
-            step_std = self._add_chd()
-            chd = flopy.mf6.ModflowGwfchd(self.model, stress_period_data=step_std)
+            step_std = self._add_chd_test()
+            chd = flopy.mf6.ModflowGwfchd(self.model, stress_period_data=step_std, boundnames=True)
         if wel:
             if self.editing:
                 self.model.remove_package("WEL")
@@ -1003,19 +1072,26 @@ class ModelBuilder:
 
     def export_vectors(self):
         dir_vectors = self._create_dir("output/vectors/")
-        self.get_observations(dir_vectors)
+        if self.base.steady:
+            self.get_observations(dir_vectors)
         self.base.model.npf.export(os.path.join(dir_vectors, "npf.shp"))
         self.base.model.rch.export(os.path.join(dir_vectors, "rch.shp"))
         pcklist = [pn.upper().split('_')[0] for p in self.base.model.packagelist for pn in p.name]
         if "DRN" in pcklist:
-            drnstd = self.base.model.drn.stress_period_data.get_dataframe()[0]
-            self.dataframe_to_geom(drnstd, os.path.join(dir_vectors, "drn.shp"))
+            for per in range(len(self.base.perioddata)):
+                drnstd = self.base.model.drn.stress_period_data.get_dataframe().get(per, None)
+                if drnstd is not None:
+                    self.dataframe_to_geom(drnstd, os.path.join(dir_vectors, f"drn{per}.shp"))
         if "RIV" in pcklist:
-            rivstd = self.base.model.riv.stress_period_data.get_dataframe()[0]
-            self.dataframe_to_geom(rivstd, os.path.join(dir_vectors, "riv.shp"))
+            for per in range(len(self.base.perioddata)):
+                rivstd = self.base.model.riv.stress_period_data.get_dataframe().get(per)
+                if rivstd is not None:
+                    self.dataframe_to_geom(rivstd, os.path.join(dir_vectors, f"riv{per}.shp"))
         if "GHB" in pcklist:
-            ghbstd = self.base.model.ghb.stress_period_data.get_dataframe()[0]
-            self.dataframe_to_geom(ghbstd, os.path.join(dir_vectors, "ghb.shp"))
+            for per in range(len(self.base.perioddata)):
+                ghbstd = self.base.model.ghb.stress_period_data.get_dataframe().get(per)
+                if ghbstd is not None:
+                    self.dataframe_to_geom(ghbstd, os.path.join(dir_vectors, f"ghb{per}.shp"))
 
     def export_other(self):
         dir_others = self._create_dir("output/others/")

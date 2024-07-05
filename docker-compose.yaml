@@ -1,0 +1,10 @@
+version: '3.3'
+services:
+  oilfem:
+    container_name: "mfbuilder"
+    build:
+      context: .
+    ports:
+      - 8010:8888
+    volumes:
+      - .:/app
