@@ -23,86 +23,106 @@ from scipy.interpolate import griddata
 from flopy.utils.geometry import Polygon
 
 
-class ModelBase:
-    def __init__(self, config: dict, editing):
-        self.editing = editing
-        if config.get("name"):
-            self.name = config.get("name")
-        else:
+class ConfigValidator:
+    def __init__(self, config: dict):
+        self.config = config
+
+    def validate_config(self):
+        self._validate_name()
+        self._validate_workspace()
+        self._validate_exe()
+
+    def _validate_name(self):
+        if not self.config.get("name"):
             raise ValueError("No name specified")
 
-        if config.get("workspace"):
-            self.workspace = config.get("workspace")
-            if not os.path.exists(self.workspace):
-                os.mkdir(self.workspace)
-        else:
+    def _validate_workspace(self):
+        workspace = self.config.get("workspace")
+        if not workspace:
             raise ValueError("No workspace specified")
+        if not os.path.exists(workspace):
+            os.mkdir(workspace)
 
-        if config.get("exe"):
-            self.exe = config.get("exe")
-            if not os.path.exists(self.exe):
-                raise ValueError(f"Executable {self.exe} does not exist")
-            else:
-                st = os.stat(self.exe)
-                os.chmod(self.exe, st.st_mode | stat.S_IEXEC)
+    def _validate_exe(self):
+        exe = self.config.get("exe")
+        if not exe:
+            raise ValueError("No executable specified")
+        if not os.path.exists(exe):
+            raise ValueError(f"Executable {exe} does not exist")
+        st = os.stat(exe)
+        os.chmod(exe, st.st_mode | stat.S_IEXEC)
 
-        self.version = config.get("version", "mf6")
-        self.steady = config.get("steady", True)
-        self.perioddata = config.get("perioddata", [(1.0, 1, 1.0)])
-        self.units = config.get("units", "DAYS")
-        self.simulation, self.model = self.__init_model()
 
-    def __init_model(self):
-        if not self.editing:
+class ModelBase:
+    def __init__(self, config: dict, editing: bool):
+        self.config = config
+        self.editing = editing
+        self._initialize_config()
+        self.simulation, self.model = self._initialize_model()
+
+    def _initialize_config(self):
+        validator = ConfigValidator(self.config)
+        validator.validate_config()
+        self.name = self.config.get("name")
+        self.workspace = self.config.get("workspace")
+        self.exe = self.config.get("exe")
+        self.version = self.config.get("version", "mf6")
+        self.steady = self.config.get("steady", True)
+        self.perioddata = self.config.get("perioddata", [(1.0, 1, 1.0)])
+        self.units = self.config.get("units", "DAYS")
+
+    def _initialize_model(self):
+        if self.editing:
+            return self._load_existing_model()
+        else:
+            return self._create_new_model()
+
+    def _create_new_model(self):
+        if self.version != "mf6":
+            sim = None
+            gwf = flopy.modflow.Modflow(self.name, exe_name=self.exe, model_ws=self.workspace, version=self.version)
+        else:
             sim = flopy.mf6.MFSimulation(
                 sim_name=self.name, exe_name=self.exe, version="mf6", sim_ws=self.workspace
             )
-            if self.steady:
-                tdis = flopy.mf6.ModflowTdis(
-                    sim, pname="tdis", time_units=self.units, nper=1, perioddata=[(1.0, 1, 1.0)]
-                )
-            else:
-                if self.perioddata:
-                    tdis = flopy.mf6.ModflowTdis(
-                        sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
-                    )
-                else:
-                    raise ValueError("No time steps specified for transient model")
+            self._configure_simulation(sim)
             gwf = flopy.mf6.ModflowGwf(
-                sim, modelname=self.name, model_nam_file=f"{self.name}.nam",
-                save_flows=True,
-                newtonoptions="NEWTON UNDER_RELAXATION",
+                sim, modelname=self.name, model_nam_file=f"{self.name}.nam", save_flows=True, newtonoptions="NEWTON UNDER_RELAXATION"
             )
-            ims = flopy.mf6.modflow.mfims.ModflowIms(sim,
-                                                     pname="ims",
-                                                     complexity="SIMPLE",
-                                                     inner_maximum=50,
-                                                     outer_maximum=25,
-                                                     backtracking_number=0,
-                                                     linear_acceleration="BICGSTAB",
-                                                     outer_dvclose=0.0001,
-                                                     inner_dvclose=0.00001,
-                                                     )
+            self._configure_ims(sim)
+        return sim, gwf
+
+    def _load_existing_model(self):
+        if self.version != "mf6":
+            sim = None
+            gwf = flopy.modflow.Modflow.load(f"{self.name}.nam", model_ws=self.workspace, version=self.version)
         else:
             sim = flopy.mf6.MFSimulation.load(sim_ws=self.workspace, exe_name=self.exe)
-            if not self.steady:
-                if self.perioddata:
-                    sim.remove_package("tdis")
-                    tdis = flopy.mf6.ModflowTdis(
-                        sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
-                    )
-                    ims = flopy.mf6.modflow.mfims.ModflowIms(sim,
-                                                             pname="ims",
-                                                             complexity="SIMPLE",
-                                                             inner_maximum=50,
-                                                             outer_maximum=25,
-                                                             backtracking_number=0,
-                                                             linear_acceleration="BICGSTAB",
-                                                             outer_dvclose=0.0001,
-                                                             inner_dvclose=0.00001,
-                                                             )
+            if not self.steady and self.perioddata:
+                sim.remove_package("tdis")
+                self._configure_simulation(sim)
+            self._configure_ims(sim)
             gwf = sim.get_model(self.name)
         return sim, gwf
+
+    def _configure_simulation(self, sim):
+        if self.steady:
+            flopy.mf6.ModflowTdis(
+                sim, pname="tdis", time_units=self.units, nper=1, perioddata=[(1.0, 1, 1.0)]
+            )
+        else:
+            if not self.perioddata:
+                raise ValueError("No time steps specified for transient model")
+            sim.remove_package("tdis")
+            flopy.mf6.ModflowTdis(
+                sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
+            )
+
+    def _configure_ims(self, sim):
+        flopy.mf6.modflow.mfims.ModflowIms(
+            sim, pname="ims", complexity="SIMPLE", inner_maximum=50, outer_maximum=25,
+            backtracking_number=0, linear_acceleration="BICGSTAB", outer_dvclose=0.0001, inner_dvclose=0.00001
+        )
 
 
 class ModelAbstract:
