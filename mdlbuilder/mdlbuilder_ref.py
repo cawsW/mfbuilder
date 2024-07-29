@@ -640,8 +640,9 @@ class ModelObservations(GridHandler):
 
     @staticmethod
     def _update_original_csv(option: dict, results: pd.DataFrame):
+        dirname = os.path.dirname(option.get("geometry"))
         geometry = Path(option.get("geometry")).stem
-        results.to_csv(f"{geometry}_text.csv", index=False)
+        results.to_csv(os.path.join(dirname, f"{geometry}_text.csv"), index=False)
 
     def add_packages(self):
         if self.packages.get("wells"):
