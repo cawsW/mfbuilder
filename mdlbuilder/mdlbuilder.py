@@ -1,6 +1,8 @@
 import os
+import platform
 import stat
 import math
+from typing import Dict, List, Union, Any
 from osgeo import gdal
 from osgeo import ogr, osr
 
@@ -15,7 +17,7 @@ from flopy.utils.gridgen import Gridgen
 from flopy.utils import GridIntersect, Raster
 from flopy.export.shapefile_utils import recarray2shp
 from flopy.utils.mflistfile import Mf6ListBudget
-from flopy.discretization import StructuredGrid, UnstructuredGrid, VertexGrid
+from flopy.discretization import StructuredGrid
 
 import rasterio
 from rasterio.transform import from_origin
@@ -24,13 +26,20 @@ from flopy.utils.geometry import Polygon
 
 
 class ConfigValidator:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, editing):
         self.config = config
+        self.editing = editing
 
     def validate_config(self):
         self._validate_name()
         self._validate_workspace()
         self._validate_exe()
+        self._validate_boundary()
+        self._validate_grid_type()
+        self._validate_cell_size()
+        self._validate_nlay()
+        self._validate_top()
+        self._validate_botm()
 
     def _validate_name(self):
         if not self.config.get("name"):
@@ -49,8 +58,45 @@ class ConfigValidator:
             raise ValueError("No executable specified")
         if not os.path.exists(exe):
             raise ValueError(f"Executable {exe} does not exist")
-        st = os.stat(exe)
-        os.chmod(exe, st.st_mode | stat.S_IEXEC)
+        if platform.system() != "Windows":
+            st = os.stat(exe)
+            os.chmod(exe, st.st_mode | stat.S_IEXEC)
+
+    def _validate_boundary(self):
+        if not self.config.get("boundary"):
+            raise ValueError("No boundary specified")
+
+    def _validate_cell_size(self):
+        if not self.config.get("cell_size"):
+            raise ValueError("No cell size specified")
+
+    def _validate_nlay(self):
+        if not self.config.get("nlay"):
+            raise ValueError("No number of layers specified")
+
+    def _validate_top(self):
+        if not self.config.get("top"):
+            raise ValueError("No top specified")
+
+    def _validate_botm(self):
+        if not self.config.get("botm"):
+            raise ValueError("No bottom specified")
+        if len(self.botm) != self.nlay and not self.editing:
+            raise ValueError("Number of botm layers does not match number of layers")
+
+    def _validate_grid_type(self):
+        if self.config.get("type"):
+            typegrd = self.config.get("type")
+            if typegrd != "structured":
+                if self.config.get("gridgen_exe"):
+                    gridgen_exe = self.config.get("gridgen_exe")
+                    if platform.system() != "Windows":
+                        st = os.stat(gridgen_exe)
+                        os.chmod(gridgen_exe, st.st_mode | stat.S_IEXEC)
+                else:
+                    raise ValueError("No gridgen executable specified")
+        else:
+            raise ValueError("No grid type specified")
 
 
 class ModelBase:
@@ -126,8 +172,9 @@ class ModelBase:
 
 
 class ModelAbstract:
-    def __init__(self, model):
-        self.model = model
+    def __init__(self, base: ModelBase):
+        self.base = base
+        self.model = base.model
 
     def _grid_polygons(self):
         modelgrid = self.model.modelgrid
@@ -200,8 +247,8 @@ class ModelGrid(ModelAbstract):
                 self.refinement = config.get("refinement")
                 if config.get("gridgen_exe"):
                     self.gridgen_exe = config.get("gridgen_exe")
-                    st = os.stat(self.gridgen_exe)
-                    os.chmod(self.gridgen_exe, st.st_mode | stat.S_IEXEC)
+                    # st = os.stat(self.gridgen_exe)
+                    # os.chmod(self.gridgen_exe, st.st_mode | stat.S_IEXEC)
                 else:
                     raise ValueError("No gridgen executable specified")
                 self.gridgen_ws = config.get("gridgen_workspace", os.path.join("grid"))
@@ -347,19 +394,35 @@ class ModelGrid(ModelAbstract):
         if not self.editing:
             if self.typegrd == "structured":
                 n_row, n_col, idomain = self._clip_structure()
-                disv = flopy.mf6.modflow.mfgwfdis.ModflowGwfdis(
-                    self.model,
-                    pname="dis",
-                    nlay=self.nlay,
-                    nrow=n_col,
-                    ncol=n_row,
-                    delr=self.cell_size,
-                    delc=self.cell_size,
-                    top=0,
-                    botm=[-10 * i for i in range(self.nlay)],
-                    idomain=idomain,
-                    xorigin=self.xmin, yorigin=self.ymin, angrot=0
-                )
+                if self.base.version == "mf6":
+                    disv = flopy.mf6.modflow.mfgwfdis.ModflowGwfdis(
+                        self.model,
+                        pname="dis",
+                        nlay=self.nlay,
+                        nrow=n_col,
+                        ncol=n_row,
+                        delr=self.cell_size,
+                        delc=self.cell_size,
+                        top=0,
+                        botm=[-10 * i for i in range(self.nlay)],
+                        idomain=idomain,
+                        xorigin=self.xmin, yorigin=self.ymin, angrot=0
+                    )
+                else:
+                    disv = flopy.modflow.ModflowDis(
+                        self.model,
+                        nlay=self.nlay,
+                        nrow=n_col,
+                        ncol=n_row,
+                        delr=self.cell_size,
+                        delc=self.cell_size,
+                        top=0,
+                        botm=[-10 * i for i in range(self.nlay)],
+                        xul=self.xmin, yul=self.ymax,
+                        crs=self.proj_string
+                    )
+                    bas = flopy.modflow.ModflowBas(self.model, ibound=np.array(idomain).reshape(disv.botm.shape),
+                                                   strt=200)
             else:
                 gridprops = self._gridgen()
                 ncpl = gridprops["ncpl"]
@@ -383,9 +446,13 @@ class ModelGrid(ModelAbstract):
             if self.editing:
                 disv = self.model.get_package("DISV")
             idomain, elevations, dem = self.form_idomain()
-            disv.idomain = idomain
-            disv.top = dem
-            disv.botm = elevations
+            if self.base.version == "mf6":
+                disv.idomain = idomain
+                disv.top = dem
+                disv.botm = elevations
+            else:
+                disv.top = dem.reshape(disv.top.shape)
+                disv.botm = np.array(elevations).reshape(disv.botm.shape)
         else:
             if self.editing:
                 disv = self.model.get_package("DISV")
@@ -448,17 +515,20 @@ class ModelParameters(ModelAbstract):
 
     def _add_rch(self):
         rch = self.packages.get("rch")
-        if type(rch) is list:
-            rch_std = []
-            for poly in rch:
-                result = self._intersection_grid_attrs(poly[0])
-                rch_std.append([[(0, node["row"], node["col"]), poly[1]] for idx, node in result.iterrows()])
-            flopy.mf6.ModflowGwfrch(self.model, stress_period_data=[item for sublist in rch_std for item in sublist])
-        elif type(rch) is float:
-            flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch})
-        elif type(rch) is str:
-            rch = self.raster_resample(rch)
-            flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch})
+        if self.base.version == "mf6":
+            if type(rch) is list:
+                rch_std = []
+                for poly in rch:
+                    result = self._intersection_grid_attrs(poly[0])
+                    rch_std.append([[(0, node["row"], node["col"]), poly[1]] for idx, node in result.iterrows()])
+                flopy.mf6.ModflowGwfrch(self.model, stress_period_data=[item for sublist in rch_std for item in sublist])
+            elif type(rch) is float:
+                flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch})
+            elif type(rch) is str:
+                rch = self.raster_resample(rch)
+                flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch})
+        else:
+            flopy.modflow.ModflowRch(self.model, rech=rch)
 
     def _add_sto(self):
         options = self.packages.get("sto")
@@ -471,9 +541,15 @@ class ModelParameters(ModelAbstract):
         options = self.packages.get("ic")
         ic = flopy.mf6.ModflowGwfic(self.model, strt=options.get("head") if options else self.model.modelgrid.top)
 
+    def _add_lpf(self):
+        lpf = self.packages.get("lpf")
+        hk = lpf.pop("k")
+        flopy.modflow.ModflowLpf(self.model, hk=hk, **lpf)
+
     def add_packages(self):
         if not self.editing:
-            self._add_ic()
+            if self.base.version == "mf6":
+                self._add_ic()
         if self.packages.get("sto"):
             if self.editing:
                 self.model.remove_package("STO")
@@ -486,6 +562,10 @@ class ModelParameters(ModelAbstract):
             if self.editing:
                 self.model.remove_package("RCH")
             self._add_rch()
+        if self.packages.get("lpf"):
+            if self.editing:
+                self.model.remove_package("LPF")
+            self._add_lpf()
 
 
 class ModelSourcesSinks(ModelAbstract):
@@ -512,12 +592,23 @@ class ModelSourcesSinks(ModelAbstract):
         return results
 
     def _add_source_sinks(self, pckg):
+
         def _ss_parameters(params):
             for name in params:
                 std_atr = params[name]
                 if type(std_atr) is str:
-                    if os.path.isdir(std_atr):
-                        pass
+                    if os.path.isfile(std_atr):
+                        par_val = self.raster_resample(std_atr)
+                        if type(self.model.modelgrid) is StructuredGrid:
+                            results[name] = par_val[results.row.values, results.col.values]
+                        else:
+                            results[name] = par_val[results.index_right]
+                    elif std_atr == "top":
+                        top = self.model.modelgrid.top
+                        if type(self.model.modelgrid) is StructuredGrid:
+                            results[name] = top[results.col.values, results.row.values]
+                        else:
+                            results[name] = top[results.index_right]
                 elif type(std_atr) is list:
                     pass
                 elif type(std_atr) is int or type(std_atr) is float:
@@ -537,12 +628,25 @@ class ModelSourcesSinks(ModelAbstract):
                 _ss_parameters(option)
                 for li, lay in enumerate(layers):
                     if type(self.model.modelgrid) is StructuredGrid:
+                        if self.base.version == "mf6":
+                            all_results.extend([
+                                [(lay - 1, row.row, row.col,), *row[list(option.keys())], row["bname"]]
+                                for idx, row in results.iterrows()
+                                if self.model.modelgrid.idomain[0][(int(row.row), int(row.col))] == 1
+                            ])
+                        else:
+                            all_results.extend([
+                                [lay - 1, row.col, row.row, *row[list(option.keys())]]
+                                for idx, row in results.iterrows()
+                                if self.model.get_package("BAS6").ibound.array[0][(int(row.col),int(row.row))] == 1
+                            ])
+                    else:
                         all_results.extend([
-                            [(lay - 1, row.row, row.col,), *row[list(option.keys())], row["bname"]]
+                            [(lay - 1, row.index_right), *row[list(option.keys())], row["bname"]]
                             for idx, row in results.iterrows()
                         ])
+            all_results = self.delete_duplicates_grid_package(all_results)
             step_std[i] = all_results
-            print(step_std)
         return step_std
 
             #     results = self._intersection_grid_attrs(option.get("geometry"))
@@ -557,6 +661,9 @@ class ModelSourcesSinks(ModelAbstract):
 
     def _add_chd_test(self):
         return self._add_source_sinks("chd")
+
+    def _add_riv_test(self):
+        return self._add_source_sinks("riv")
 
     def _add_chd(self):
         data = self.packages.get("chd")
@@ -602,8 +709,12 @@ class ModelSourcesSinks(ModelAbstract):
                         top = self.model.modelgrid.top[(int(row[args[1]]), int(row[args[0]]))]
                     else:
                         top = stages[(int(row[args[1]]), int(row[args[0]]))]
-                    return [(lay - 1, int(row[args[1]]), int(row[args[0]])), top, row["cond"], top - option["depth"],
-                            f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
+                    if self.base.version == "mf6":
+                        return [(lay - 1, int(row[args[1]]), int(row[args[0]])), top, row["cond"], top - option["depth"],
+                                f'{option["bname"]}_{lay}{row.name}' if option.get("bname") else f'{lay}{row.name}']
+                    else:
+                        return [lay - 1, int(row[args[1]]), int(row[args[0]]), top, row["cond"],
+                                top - option["depth"]]
             else:
                 if stages == "top":
                     top = self.model.modelgrid.top[int(row[args[0]])]
@@ -632,9 +743,11 @@ class ModelSourcesSinks(ModelAbstract):
                     zz = 0
                     all_results.extend(self._process_results(results, river_func))
             last_occurrences = {}
-
             for item in all_results:
-                key = item[0]
+                if self.base.version =='mf6':
+                    key = item[0]
+                else:
+                    key = (item[0], item[1], item[2])
                 last_occurrences[key] = item
             unique_last_items = list(last_occurrences.values())
             step_std[i] = unique_last_items
@@ -670,7 +783,6 @@ class ModelSourcesSinks(ModelAbstract):
                             results["head"] = heads
                     all_results.extend(self._process_results(results, ghb_func))
             step_std[i] = all_results
-            print(all_results)
 
         return step_std
 
@@ -745,14 +857,16 @@ class ModelSourcesSinks(ModelAbstract):
         # multipoint = unary_union(points)
         return points
 
-    @staticmethod
-    def delete_duplicates_grid_package(example_list):
+    def delete_duplicates_grid_package(self, example_list):
         unique_list = []
         seen_tuples = set()
         for sublist in example_list:
             if sublist[0] not in seen_tuples:
                 unique_list.append(sublist)
-                seen_tuples.add(sublist[0])
+                if self.base.version == "mf6":
+                    seen_tuples.add(sublist[0])
+                else:
+                    seen_tuples.add((sublist[0], sublist[1], sublist[2]))
         return unique_list
 
     def _add_wel(self):
@@ -828,8 +942,12 @@ class ModelSourcesSinks(ModelAbstract):
         if riv:
             if self.editing:
                 self.model.remove_package("RIV")
+            # step_std = self._add_riv_test()
             step_std = self._add_river()
-            riv = flopy.mf6.ModflowGwfriv(self.model, stress_period_data=step_std, save_flows=True, boundnames=True)
+            if self.base.version == "mf6":
+                riv = flopy.mf6.ModflowGwfriv(self.model, stress_period_data=step_std, save_flows=True, boundnames=True)
+            else:
+                riv = flopy.modflow.ModflowRiv(self.model, stress_period_data=step_std)
         if ghb:
             if self.editing:
                 self.model.remove_package("GHB")
@@ -931,38 +1049,49 @@ class ModelBuilder:
             raise ValueError("No base options specified")
 
         if config.get("grid"):
-            self.grid = ModelGrid(self.base.model, config.get("grid"), editing)
+            self.grid = ModelGrid(self.base, config.get("grid"), editing)
         else:
             if not editing:
                 raise ValueError("No grid options specified")
         if config.get("parameters"):
-            self.parameters = ModelParameters(self.base.model, config.get("parameters"), editing)
+            self.parameters = ModelParameters(self.base, config.get("parameters"), editing)
         else:
             print("No parameters options specified")
-        self.sources = ModelSourcesSinks(self.base.model, config.get("sources"), editing) if config.get(
+        self.sources = ModelSourcesSinks(self.base, config.get("sources"), editing) if config.get(
             "sources") else None
-        self.observations = ModelObservations(self.base.model, config.get("observations"), editing) if config.get(
+        self.observations = ModelObservations(self.base, config.get("observations"), editing) if config.get(
             "observations") else None
         self.external = external
 
     def output_package(self):
         model_name = self.base.name
-        oc = flopy.mf6.ModflowGwfoc(
-            self.base.model,
-            pname="oc",
-            budget_filerecord=f"{model_name}.cbb",
-            head_filerecord=f"{model_name}.hds",
-            headprintrecord=[("COLUMNS", 10, "WIDTH", 15, "DIGITS", 6, "GENERAL")],
-            saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
-            printrecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
-        )
+        if self.base.version == "mf6":
+            oc = flopy.mf6.ModflowGwfoc(
+                self.base.model,
+                pname="oc",
+                budget_filerecord=f"{model_name}.cbb",
+                head_filerecord=f"{model_name}.hds",
+                headprintrecord=[("COLUMNS", 10, "WIDTH", 15, "DIGITS", 6, "GENERAL")],
+                saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
+                printrecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
+            )
+        else:
+            spd = {(0, 0): ["print head", "print budget", "save head", "save budget"]}
+            oc = flopy.modflow.ModflowOc(self.base.model, stress_period_data=spd, compact=True)
+            pcg = flopy.modflow.ModflowPcg(self.base.model)
 
     def run(self):
         self.output_package()
-        if self.external:
-            self.base.simulation.set_all_data_external(True)
-        self.base.simulation.write_simulation()
-        success, buff = self.base.simulation.run_simulation()
+        if self.base.version == "mf6":
+            if self.external:
+                self.base.simulation.set_all_data_external(True)
+            self.base.simulation.write_simulation()
+            success, buff = self.base.simulation.run_simulation()
+        else:
+            self.base.model.write_input()
+            self.base.model.check()
+            success, buff = self.base.model.run_model()
+
         if success:
             for line in buff:
                 print(line)
@@ -1074,12 +1203,12 @@ class ModelBuilder:
         ex_arr.extend(
             [(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in
              range(per[1])])
-        ex_arr.extend([(f"npf_lay_", self.get_npf())])
+        ex_arr.extend([("npf_lay_", self.get_npf())])
         rch = self.get_rch()
         if rch is not None:
-            ex_arr.extend([(f"rch_lay_", rch)])
-        surf_arr.extend([(f"bot_lay_", self.base.model.modelgrid.botm)])
-        surf_arr.extend([(f"top_lay_", [self.base.model.modelgrid.top])])
+            ex_arr.extend([("rch_lay_", rch)])
+        surf_arr.extend([("bot_lay_", self.base.model.modelgrid.botm)])
+        surf_arr.extend([("top_lay_", [self.base.model.modelgrid.top])])
         for name, arr in ex_arr:
             for lay, la in enumerate(arr):
                 raster_name = self.create_raster(50, la, f"{name}{lay}", dir_rasters)
@@ -1125,3 +1254,165 @@ class ModelBuilder:
             vertices.append(self.base.model.modelgrid.get_cell_vertices(cell))
         polygons = [Polygon(vrt) for vrt in vertices]
         recarray2shp(df.to_records(), geoms=polygons, shpname=name, crs=self.grid.proj_string)
+
+
+class GeometryProcessor:
+    def __init__(self, model):
+        self.model = model
+
+    def process_geometry(self, geometry: Union[dict, str]) -> pd.DataFrame:
+        if isinstance(geometry, dict):
+            return self._process_dict_geometry(geometry)
+        elif isinstance(geometry, str) and os.path.isfile(geometry):
+            return self._process_file_geometry(geometry)
+        else:
+            raise ValueError("Unsupported geometry type")
+
+    def _process_dict_geometry(self, geometry: dict) -> pd.DataFrame:
+        modelgrid = self.model.modelgrid
+        if modelgrid.__class__.__name__ == 'StructuredGrid':
+            if 'row' in geometry:
+                ncol = modelgrid.ncol
+                ss_geo = zip([geometry['row']] * ncol, range(ncol))
+                return pd.DataFrame(ss_geo, columns=["row", "col"])
+            elif 'col' in geometry:
+                nrow = modelgrid.nrow
+                ss_geo = zip(range(nrow), [geometry['col']] * nrow)
+                return pd.DataFrame(ss_geo, columns=["row", "col"])
+        raise ValueError("Invalid geometry dictionary")
+
+    def _process_file_geometry(self, geometry: str) -> pd.DataFrame:
+        layer = gpd.read_file(geometry)
+        grid_poly = self._grid_polygons()
+        join_pdf = layer.sjoin(grid_poly, how="left").dropna(subset=["index_right"])
+        return join_pdf.astype({"row": int, "col": int, "index_right": int})
+
+    def _grid_polygons(self) -> gpd.GeoDataFrame:
+        modelgrid = self.model.modelgrid
+        poly_arr = modelgrid.map_polygons
+        rowcol = []
+
+        if isinstance(modelgrid, StructuredGrid):
+            polygons = []
+            a, b = poly_arr
+            for i in range(len(a[0]) - 1):
+                for j in range(len(a) - 1):
+                    poly = Polygon([
+                        (a[j][i], b[j][i]),
+                        (a[j][i + 1], b[j][i]),
+                        (a[j][i + 1], b[j + 1][i]),
+                        (a[j][i], b[j + 1][i]),
+                        (a[j][i], b[j][i]),
+                    ])
+                    polygons.append(poly)
+                    rowcol.append((j, i))
+        else:
+            polygons = [Polygon(array.vertices) for array in poly_arr]
+        griddf = gpd.GeoDataFrame(data=rowcol, columns=["row", "col"], geometry=polygons)
+        griddf = griddf.replace(np.nan, -999)
+        return griddf
+
+# Class to handle raster operations
+class RasterProcessor:
+    def __init__(self, model):
+        self.model = model
+
+    def resample(self, path: str, method="nearest") -> Any:
+        rio = Raster.load(os.path.join(path))
+        return rio.resample_to_grid(self.model.modelgrid, band=rio.bands[0], method=method)
+
+# Class to handle source/sink parameters
+class ParameterProcessor:
+    def __init__(self, model):
+        self.model = model
+        self.raster_processor = RasterProcessor(model)
+        self.geometry_processor = GeometryProcessor(model)
+
+    def process_parameters(self, params: Dict[str, Any], results: pd.DataFrame) -> pd.DataFrame:
+        for name, std_atr in params.items():
+            if isinstance(std_atr, str) and os.path.isfile(std_atr):
+                par_val = self.raster_processor.resample(std_atr)
+                results[name] = par_val[results.row.values, results.col.values]
+            elif std_atr == "top":
+                top = self.model.modelgrid.top
+                results[name] = top[results.row.values, results.col.values]
+            elif isinstance(std_atr, (int, float)):
+                results[name] = std_atr
+        return results
+
+# Main class to add source/sinks
+class ModelSourcesSinksTest:
+    def __init__(self, base: ModelBase, config: dict, editing):
+        self.base = base
+        self.model = base.model
+        self.packages = config
+        self.editing = editing
+        self.geometry_processor = GeometryProcessor(base.model)
+        self.parameter_processor = ParameterProcessor(base.model)
+        self.add_packages()
+
+    def add_packages(self):
+        riv = self.packages.get("riv")
+
+        if riv:
+            if self.editing:
+                self.model.remove_package("RIV")
+            step_std = self._add_riv()
+            if self.base.version == "mf6":
+                riv = flopy.mf6.ModflowGwfriv(self.model, stress_period_data=step_std, save_flows=True, boundnames=True)
+            else:
+                riv = flopy.modflow.ModflowRiv(self.model, stress_period_data=step_std)
+
+    def _add_source_sinks(self, package_name: str) -> Dict[int, List[Any]]:
+        package_data = self.packages.get(package_name, {})
+        step_std = {}
+
+        for i, spd in package_data.items():
+            all_results = []
+            for option in spd:
+                geometry = option.pop("geometry")
+                layers = option.pop("layers")
+                results = self.geometry_processor.process_geometry(geometry)
+
+                if "bname" in option:
+                    results["bname"] = option.pop("bname")
+
+                results = self.parameter_processor.process_parameters(option, results)
+                all_results.extend(self._prepare_results(results, layers, option))
+            step_std[i] = self._delete_duplicates(all_results)
+        return step_std
+
+    def _prepare_results(self, results: pd.DataFrame, layers: List[int], option: Dict[str, Any]) -> List[Any]:
+        all_results = []
+        for li, lay in enumerate(layers):
+            for idx, row in results.iterrows():
+                if self.base.version == "mf6":
+                    if self.model.modelgrid.idomain[0][(int(row.row), int(row.col))] == 1:
+                        all_results.append([(lay - 1, row.row, row.col), *row[list(option.keys())]])
+                else:
+                    bas = self.model.get_package("BAS6")
+                    if bas is not None:
+                        domain = self.model.get_package("BAS6").ibound.array[0][(int(row.row), int(row.col))]
+                    else:
+                        domain = "all"
+                    if domain == 1 or domain == "all":
+                        all_results.append([lay - 1, row.row, row.col, *row[list(option.keys())]])
+        return all_results
+
+    def _delete_duplicates(self, results: List[Any]) -> List[Any]:
+        unique_list = []
+        seen_tuples = set()
+        for sublist in results:
+            if sublist[0] not in seen_tuples:
+                unique_list.append(sublist)
+                if self.base.version == "mf6":
+                    seen_tuples.add(sublist[0])
+                else:
+                    seen_tuples.add((sublist[0], sublist[1], sublist[2]))
+        return unique_list
+
+    def _add_chd(self):
+        return self._add_source_sinks("chd")
+
+    def _add_riv(self):
+        return self._add_source_sinks("riv")
