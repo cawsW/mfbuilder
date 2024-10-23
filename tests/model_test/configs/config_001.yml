@@ -1,0 +1,46 @@
+default:
+  vector_dir: &vectors input/vector
+  raster_dir: &rasters input/raster
+base:
+  name: kursk
+  workspace: model
+  version: mf6
+  units: DAYS
+  steady: True
+  exe: "../../bin/mf6.exe"
+  proj_string: "EPSG:2497"
+grid:
+  boundary: !join [*vectors,border.shp]
+  type: structured
+  gridgen_exe: "../../bin/gridgen.exe"
+  cell_size: 1000
+  nlay: 4
+  top: !join [ *rasters, dem, dem_srtm.tif ]
+  botm:
+    - !join [ *rasters, bot_model, bot_1.tif ]
+    - !join [ *rasters, bot_model, bot_2.tif ]
+    - !join [ *rasters, bot_model, bot_3.tif ]
+    - !join [ *rasters, bot_model, bot_4.tif ]
+  min_thickness: 1
+parameters:
+  npf:
+    k: [1, 3, 0.0005, 1]
+  rch:
+    rech: 0.0004
+  ic:
+    strt: 250
+sources:
+  riv:
+    0:
+      data:
+        - geometry: !join [*vectors, streams.shp]
+          stage: top
+          cond: 20
+          depth: stage - 2
+          layers:
+            - 1
+observations:
+  wells:
+    - geometry: !join [ *vectors, new_kursk_all_well__GK_7N.shp]
+      layers: 1
+      name: Well Name

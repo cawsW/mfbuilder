@@ -3,22 +3,22 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import rasterio
 from rasterio.transform import from_origin
 import flopy
 from flopy.export.shapefile_utils import recarray2shp
+from flopy.discretization import StructuredGrid
 from flopy.utils.mflistfile import Mf6ListBudget
 from flopy.utils.geometry import Polygon
 from scipy.interpolate import griddata
 from shapely import Polygon
 from osgeo import gdal, ogr, osr
 
-from mdlbuilder.mdlbuilder_ref import ModelBuilder
-
 
 class BaseExporter:
-    def __init__(self, builder: ModelBuilder):
-        self.builder = builder
+    def __init__(self, model):
+        self.model = model
 
     @staticmethod
     def _create_dir(path: str) -> str:
@@ -28,28 +28,29 @@ class BaseExporter:
         return out_dir
 
     def get_package_list(self):
-        return [pn.upper().split('_')[0] for p in self.builder.base.model.packagelist for pn in p.name]
+        return [pn.upper().split('_')[0] for p in self.model.packagelist for pn in p.name]
 
     def get_heads(self, per):
-        headfile = f"{self.builder.base.model.name}.hds"
-        fname = os.path.join(self.builder.base.model.model_ws, headfile)
+        headfile = f"{self.model.name}.hds"
+        fname = os.path.join(self.model.model_ws, headfile)
         hds = flopy.utils.HeadFile(fname)
         head = hds.get_data(kstpkper=per)
         return head
 
     def get_npf(self):
-        npf = self.builder.base.model.get_package("NPF")
+        npf = self.model.get_package("NPF")
         return npf.k.array
 
     def get_rch(self):
-        rch = self.builder.base.model.get_package("RCH")
+        rch = self.model.get_package("RCH")
         return rch.recharge.array if rch else None
 
 
 class VectorExporter(BaseExporter):
-    def __init__(self, builder: ModelBuilder):
-        super().__init__(builder)
-        self.dir_vectors = self._create_dir("output/vectors/")
+    def __init__(self, model, crs, subspace="model"):
+        super().__init__(model)
+        self.crs = crs
+        self.dir_vectors = self._create_dir(f"output/vectors/{subspace}")
 
     @staticmethod
     def _create_fields(contour_layer):
@@ -84,45 +85,61 @@ class VectorExporter(BaseExporter):
     def _to_geom(self, df, name):
         vertices = []
         for cell in df.cell:
-            vertices.append(self.builder.base.model.modelgrid.get_cell_vertices(cell))
+            vertices.append(self.model.modelgrid.get_cell_vertices(cell))
         polygons = [Polygon(vrt) for vrt in vertices]
-        recarray2shp(df.to_records(), geoms=polygons, shpname=name, crs=self.builder.grid.proj_string)
+        recarray2shp(df.to_records(), geoms=polygons, shpname=name, crs=self.crs)
 
     def _pkg_to_geom(self, pkg):
-        for per in range(len(self.builder.base.perioddata)):
-            std = self.builder.base.model.get_package(pkg).stress_period_data.get_dataframe().get(per, None)
+        for per in range(self.model.nper):
+            std = self.model.get_package(pkg).stress_period_data.get_dataframe().get(per, None)
             if std is not None:
                 self._to_geom(std, os.path.join(self.dir_vectors, f"{pkg.lower()}{per}.shp"))
 
     def export_vectors(self):
-        self.builder.base.model.npf.export(os.path.join(self.dir_vectors, "npf.shp"))
-        self.builder.base.model.rch.export(os.path.join(self.dir_vectors, "rch.shp"))
+        self.model.npf.export(os.path.join(self.dir_vectors, "npf.shp"))
+        self.model.rch.export(os.path.join(self.dir_vectors, "rch.shp"))
         pkglist = self.get_package_list()
-        exp_pkcg = ["DRN", "RIV", "GHB"]
+        exp_pkcg = ["DRN", "RIV", "GHB", "CHD"]
         for pkg in exp_pkcg:
             if pkg in pkglist:
                 self._pkg_to_geom(pkg)
 
 
 class RasterExporter(VectorExporter):
-    def __init__(self, builder: ModelBuilder, size=50):
-        super().__init__(builder)
-        self.dir_rasters = self._create_dir("output/rasters")
-        self.dir_contours = self._create_dir("output/rasters/contours")
+    def __init__(self, model, crs, extent, size=50, subspace="model"):
+        super().__init__(model, crs)
+        self.boundary = self.__init_boundary(extent)
+        self.dir_rasters = self._create_dir(f"output/rasters/{subspace}")
+        self.dir_contours = self._create_dir(f"output/rasters/{subspace}/contours")
         self.size = size
+        self.xmin, self.ymin, self.xmax, self.ymax = self.__init_bounds()
+
+    def __init_boundary(self, boundary):
+        if type(boundary) is str and os.path.exists(boundary):
+            boundary = gpd.read_file(os.path.join(boundary), crs=self.crs)
+        elif type(boundary) is list:
+            boundary = Polygon(boundary)
+        return boundary
+
+    def __init_bounds(self):
+        if type(self.boundary) is gpd.GeoDataFrame:
+            xmin, ymin, xmax, ymax = self.boundary.total_bounds
+        else:
+            xmin, ymin, xmax, ymax = self.boundary.bounds
+        return xmin, ymin, xmax, ymax
 
     def get_num_cells(self):
-        range_x = (self.builder.grid.xmax - self.builder.grid.xmin) + 20 * self.size
-        range_y = (self.builder.grid.ymax - self.builder.grid.ymin) + 20 * self.size
+        range_x = (self.xmax - self.xmin) + 20 * self.size
+        range_y = (self.ymax - self.ymin) + 20 * self.size
         return int(range_x / self.size), int(range_y / self.size)
 
     def get_centroids(self):
-        if self.builder.grid.is_structured():
-            cell2d = self.builder.base.model.modelgrid.xyzcellcenters
+        if isinstance(self.model.modelgrid, StructuredGrid):
+            cell2d = self.model.modelgrid.xyzcellcenters
             centroids_x = cell2d[0].flatten()
             centroids_y = cell2d[1].flatten()
         else:
-            cell2d = self.builder.base.model.modelgrid.cell2d
+            cell2d = self.model.modelgrid.cell2d
             centroids_x = [cell[1] for cell in cell2d]
             centroids_y = [cell[2] for cell in cell2d]
 
@@ -131,8 +148,8 @@ class RasterExporter(VectorExporter):
     def _create_grid(self):
         num_cells_x, num_cells_y = self.get_num_cells()
         gridx, gridy = np.meshgrid(
-            np.linspace(self.builder.grid.xmin - 10 * self.size, self.builder.grid.xmax + 10 * self.size, num=num_cells_x),
-            np.linspace(self.builder.grid.ymin - 10 * self.size, self.builder.grid.ymax + 10 * self.size, num=num_cells_y)
+            np.linspace(self.xmin - 10 * self.size, self.xmax + 10 * self.size, num=num_cells_x),
+            np.linspace(self.ymin - 10 * self.size, self.ymax + 10 * self.size, num=num_cells_y)
         )
         return gridx, gridy
 
@@ -153,7 +170,7 @@ class RasterExporter(VectorExporter):
             count=1,
             dtype=str(interpolated_data.dtype),
             nodata=np.nan,
-            crs=self.builder.grid.proj_string,
+            crs=self.crs,
             transform=transform,
         )
         new_dataset.write(interpolated_data[::-1], 1)
@@ -161,10 +178,12 @@ class RasterExporter(VectorExporter):
 
     def _form_pkg_arrays(self):
         ex_arr = []
-        perioddata = self.builder.base.simulation.get_package("tdis").perioddata.array
         ex_arr.extend(
-            [(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(perioddata) for step in
-             range(per[1])])
+
+            [(f"head_{i}_lay_", self.get_heads((self.model.modeltime.nstp[i] - 1, i))) for i, per in enumerate(range(self.model.nper))]
+            # [(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(range(self.model.nper)) for step in
+            #  range(self.model.modeltime.nstp[i])]
+        )
         ex_arr.extend([("npf_lay_", self.get_npf())])
         rch = self.get_rch()
         if rch is not None:
@@ -173,8 +192,8 @@ class RasterExporter(VectorExporter):
 
     def _form_surface_arrays(self):
         surf_arr = []
-        surf_arr.extend([("bot_lay_", self.builder.base.model.modelgrid.botm)])
-        surf_arr.extend([("top_lay_", [self.builder.base.model.modelgrid.top])])
+        surf_arr.extend([("bot_lay_", self.model.modelgrid.botm)])
+        surf_arr.extend([("top_lay_", [self.model.modelgrid.top])])
         return surf_arr
 
     def arrays_to_raster(self, arrays):
@@ -193,14 +212,15 @@ class RasterExporter(VectorExporter):
 
 
 class TxtExporter(BaseExporter):
-    def __init__(self, builder: ModelBuilder):
-        super().__init__(builder)
-        self.dir_txt = self._create_dir("output/txt/")
+    def __init__(self, model, subspace="model"):
+        super().__init__(model)
+        self.dir_txt = self._create_dir(f"output/txt/{subspace}")
 
     @staticmethod
     def get_real_obs(path):
-        geometry = Path(path).stem
-        obs = pd.read_csv(f"{geometry}_text.csv")
+        dirname = os.path.dirname(path)
+        filename = f"{Path(path).stem}_text.csv"
+        obs = pd.read_csv(os.path.join(dirname, filename))
         return obs
 
     @staticmethod
@@ -212,13 +232,13 @@ class TxtExporter(BaseExporter):
 
     def get_model_obs(self):
         model_obs = pd.read_csv(
-            os.path.join(self.builder.base.model.model_ws, f"{self.builder.base.model.name}.obs.head.csv"))
+            os.path.join(self.model.model_ws, f"{self.model.name}.obs.head.csv"), encoding="latin")
         model_obs = model_obs.transpose().reset_index()
         model_obs.columns = ["name", "head_model"]
         return model_obs
 
-    def export_observations(self):
-        real_data = self.builder.observations.packages.get("wells")
+    def export_observations(self, observations):
+        real_data = observations.get("wells")
         if real_data:
             for i, data in enumerate(real_data):
                 obs = self.get_real_obs(data.get("geometry"))
@@ -228,10 +248,11 @@ class TxtExporter(BaseExporter):
                 res.to_csv(os.path.join(self.dir_txt, f"residuals_{i + 1}.csv"), index=False)
 
     def export_balance(self):
-        mf_list = Mf6ListBudget(os.path.join(self.builder.base.model.model_ws, f"{self.builder.base.model.name}.lst"))
+        mf_list = Mf6ListBudget(os.path.join(self.model.model_ws, f"{self.model.name}.lst"))
         incrementaldf, cumulativedf = mf_list.get_dataframes()
-        cumulativedf.to_csv(os.path.join(self.dir_txt, "balances.csv"), index=False)
+        cumulativedf.to_csv(os.path.join(self.dir_txt, "balances_cumm.csv"))
+        incrementaldf.to_csv(os.path.join(self.dir_txt, "balances_inc.csv"))
 
-    def export_all(self):
+    def export_all(self, observations):
         self.export_balance()
-        self.export_observations()
+        self.export_observations(observations)
