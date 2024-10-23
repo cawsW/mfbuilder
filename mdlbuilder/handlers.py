@@ -14,10 +14,13 @@ class GridHandler:
     def __init__(self, base):
         self.base = base
         self.model = base.model
+        if self.model.modelgrid is not None:
+        # if (self.base.is_mf6() and self.model.modelgrid._idomain is not None) or self.base.is_mf2005():
+            self.grid_poly = self._grid_polygons()
 
     @staticmethod
     def is_raster(val):
-        return isinstance(val, str) and os.path.isfile(val)
+        return isinstance(val, str) and os.path.isfile(val) and val.endswith(".tif")
 
     @staticmethod
     def is_vector(val):
@@ -38,8 +41,8 @@ class GridHandler:
         return isinstance(self.model.modelgrid, UnstructuredGrid) or isinstance(self.model.modelgrid, VertexGrid)
 
     def remove_package(self, pckg_name):
-        if self.model.has_package(pckg_name.upper()):
-            self.model.remove_package(pckg_name.upper())
+        if self.model.has_package(pckg_name):
+            self.model.remove_package(pckg_name)
 
     def const_grid(self, val):
         return val * np.ones(self.model.modelgrid.ncpl)
@@ -81,6 +84,7 @@ class GridHandler:
         else:
             rowcol, polygons = self._unstructured_grid_poly()
         griddf = gpd.GeoDataFrame(data=rowcol, columns=["row", "col"], geometry=polygons)
+        griddf["geometry_y"] = griddf["geometry"]
         griddf = griddf.replace(np.nan, -999)
         return griddf
 
@@ -103,8 +107,7 @@ class GridHandler:
         raise ValueError("Invalid geometry dictionary")
 
     def _process_intersections(self, layer):
-        grid_poly = self._grid_polygons()
-        join_pdf = layer.sjoin(grid_poly, how="left").dropna(subset=["index_right"])
+        join_pdf = layer.sjoin(self.grid_poly, how="left").dropna(subset=["index_right"])
         return join_pdf.astype({"row": int, "col": int, "index_right": int})
 
     def _process_file_geometry(self, geometry: str) -> pd.DataFrame:
@@ -115,7 +118,7 @@ class GridHandler:
     def _process_file_csv(self, geometry: str) -> pd.DataFrame:
         layer = pd.read_csv(geometry)
         layer.columns = [x.lower() for x in layer.columns]
-        layer = gpd.GeoDataFrame(layer, gpd.points_from_xy(layer.x, layer.y))
+        layer = gpd.GeoDataFrame(layer, geometry=gpd.points_from_xy(layer.x, layer.y))
         return self._process_intersections(layer)
 
     def _get_all_structured_cells(self):
@@ -134,7 +137,11 @@ class GridHandler:
             results = pd.DataFrame(self._get_all_unstructured_cells())
         return results
 
-    def process_geometry(self, geometry: Union[dict, str]) -> pd.DataFrame:
+    def _process_geometry_shape(self, geometry):
+        layer = gpd.GeoDataFrame({"geometry": geometry})
+        return self._process_intersections(layer)
+
+    def process_geometry(self, geometry: Union[dict, str, list]) -> pd.DataFrame:
         if isinstance(geometry, dict):
             return self._process_dict_geometry(geometry)
         elif self.is_vector(geometry):
@@ -143,6 +150,8 @@ class GridHandler:
             return self._process_file_csv(geometry)
         elif geometry == "all":
             return self._process_geometry_all()
+        elif isinstance(geometry, list):
+            return self._process_geometry_shape(geometry)
         else:
             raise ValueError("Unsupported geometry type")
 

@@ -15,7 +15,7 @@ class LoaderYaml:
 
     def read_yml(self):
         yaml.add_constructor('!join', self.join_path)
-        with open(self.yml, 'r') as file:
+        with open(self.yml, 'r', encoding="utf-8") as file:
             return yaml.full_load(file)
 
 

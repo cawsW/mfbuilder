@@ -7,6 +7,7 @@ from typing import Dict, List, Any
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import rasterio
 import flopy
 import flopy.discretization as fgrid
 from flopy.utils.gridgen import Gridgen
@@ -25,7 +26,7 @@ class ModelBase:
         self.exe = config.get("exe")
         self.version = config.get("version", "mf6")
         self.steady = config.get("steady", True)
-        self.perioddata = np.array(config.get("perioddata", [(1.0, 1, 1.0)]))
+        self.perioddata = config.get("perioddata", [(1.0, 1, 1.0)])
         self.units = config.get("units", "DAYS")
         self.editing = editing
         self.simulation, self.model = self._initialize_model()
@@ -50,7 +51,7 @@ class ModelBase:
             self._configure_simulation(sim)
             gwf = flopy.mf6.ModflowGwf(
                 sim, modelname=self.name, model_nam_file=f"{self.name}.nam", save_flows=True,
-                newtonoptions="NEWTON UNDER_RELAXATION"
+                # newtonoptions="NEWTON UNDER_RELAXATION"
             )
             self._configure_ims(sim)
         else:
@@ -70,20 +71,17 @@ class ModelBase:
         return sim, gwf
 
     def _configure_simulation(self, sim):
-        if self.steady:
-            flopy.mf6.ModflowTdis(
-                sim, pname="tdis", time_units=self.units, nper=1, perioddata=[(1.0, 1, 1.0)]
-            )
-        else:
+        if not self.steady or self.editing:
             sim.remove_package("tdis")
-            flopy.mf6.ModflowTdis(
-                sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
-            )
+        flopy.mf6.ModflowTdis(
+            sim, pname="tdis", time_units=self.units, nper=len(self.perioddata), perioddata=self.perioddata
+        )
 
     def _configure_ims(self, sim):
         flopy.mf6.modflow.mfims.ModflowIms(
-            sim, pname="ims", complexity="SIMPLE", inner_maximum=50, outer_maximum=25,
-            backtracking_number=0, linear_acceleration="BICGSTAB", outer_dvclose=0.0001, inner_dvclose=0.00001
+            sim, pname="ims", complexity="SIMPLE", inner_maximum=500, outer_maximum=250,
+            backtracking_number=0, linear_acceleration="BICGSTAB", outer_dvclose=0.0001, inner_dvclose=0.00001,
+
         )
 
 
@@ -110,14 +108,14 @@ class MfBaseGrid(GridHandler):
 
     def __init_bounds(self):
         if type(self.boundary) is gpd.GeoDataFrame:
-            xmin, ymin, xmax, ymax = self.boundary.total_bounds
+            xmin, ymin, xmax, ymax = self.boundary.geometry[0].bounds
         else:
             xmin, ymin, xmax, ymax = self.boundary.bounds
         return xmin, ymin, xmax, ymax
 
     def __init_size(self):
-        n_row = math.ceil((self.xmax - self.xmin) / self.cell_size)
-        n_col = math.ceil((self.ymax - self.ymin) / self.cell_size)
+        n_row = math.floor((self.ymax - self.ymin) / self.cell_size)
+        n_col = math.floor((self.xmax - self.xmin) / self.cell_size)
         delr = self.cell_size * np.ones(n_row, dtype=float)
         delc = self.cell_size * np.ones(n_col, dtype=float)
         return n_row, n_col, delr, delc
@@ -204,14 +202,14 @@ class MfStructuredGrid(MfBaseGrid):
         self.create_dis()
 
     def _active_cells(self, ix_cells):
-        a_cells = np.zeros((self.nlay, self.n_col, self.n_row), dtype=np.int64)
+        a_cells = np.zeros((self.nlay, self.n_row, self.n_col), dtype=np.int64)
         rows, cols = zip(*ix_cells.cellids)
         a_cells[:, rows, cols] = 1
         return a_cells
 
     def _get_intersecting_cells(self):
         sgr = fgrid.StructuredGrid(
-            self.delc, self.delr, top=None, botm=None, xoff=self.xmin, yoff=self.ymin, angrot=0, nlay=self.nlay
+            self.delr, self.delc, top=None, botm=None, xoff=self.xmin, yoff=self.ymin, angrot=0, nlay=self.nlay,
         )
         return GridIntersect(sgr, method="vertex")
 
@@ -224,16 +222,17 @@ class MfStructuredGrid(MfBaseGrid):
         return self._active_cells(result)
 
     def _create_dis_mf2005(self):
+        print(self.xmin, self.ymin)
         return flopy.modflow.ModflowDis(
             self.model,
             nlay=self.nlay,
-            nrow=self.n_col,
-            ncol=self.n_row,
+            nrow=self.n_row,
+            ncol=self.n_col,
             delr=self.cell_size,
             delc=self.cell_size,
-            perlen=self.base.perioddata[:, 0],
-            nstp=self.base.perioddata[:, 1],
-            tsmult=self.base.perioddata[:, 2],
+            perlen=[per[0] for per in self.base.perioddata],
+            nstp=[stp[1] for stp in self.base.perioddata],
+            tsmult=[ts[2] for ts in self.base.perioddata],
             steady=True if self.base.steady else [True] + self.base.steady * (len(self.base.perioddata) - 1),
             top=10,
             botm=[lay * -10 for lay in range(self.nlay)],
@@ -244,7 +243,7 @@ class MfStructuredGrid(MfBaseGrid):
     def _create_bas(self, idomain):
         if self.editing:
             self.model.remove_package("BAS6")
-        bas = flopy.modflow.ModflowBas(self.model, ibound=np.array(idomain), strt=200)
+        bas = flopy.modflow.ModflowBas(self.model, ibound=np.array(idomain), strt=400)
         return bas
 
     def _create_dis_mf6(self, a_cells):
@@ -252,14 +251,14 @@ class MfStructuredGrid(MfBaseGrid):
             self.model,
             pname="dis",
             nlay=self.nlay,
-            nrow=self.n_col,
-            ncol=self.n_row,
+            nrow=self.n_row,
+            ncol=self.n_col,
             delr=self.cell_size,
             delc=self.cell_size,
             top=0,
             idomain=a_cells,
             botm=[lay * -10 for lay in range(self.nlay)],
-            xorigin=self.xmin, yorigin=self.ymin, angrot=0
+            xorigin=self.xmin, yorigin=self.ymin, angrot=0,
         )
 
     def _edit_dis_mf2005(self, dis, botm):
@@ -304,6 +303,7 @@ class MfUnstructuredGrid(MfBaseGrid):
             level = data["level"]
             if self.is_vector(geometry):
                 layer = gpd.read_file(os.path.join(geometry), crs=self.proj_string)
+                layer = layer.explode()
                 usg.add_refinement_features(list(layer.geometry), type_geom, level, list(range(self.nlay)))
 
     def _refinement_grid(self, usg):
@@ -335,8 +335,8 @@ class MfUnstructuredGrid(MfBaseGrid):
         dis = flopy.modflow.ModflowDis(
             ms,
             nlay=self.nlay,
-            nrow=self.n_col,
-            ncol=self.n_row,
+            nrow=self.n_row,
+            ncol=self.n_col,
             delr=self.delr,
             delc=self.delc,
             top=0,
@@ -364,7 +364,7 @@ class MfUnstructuredGrid(MfBaseGrid):
             nvert=nvert,
             vertices=vertices,
             cell2d=cell2d,
-            xorigin=self.xmin, yorigin=self.ymin, angrot=0
+            xorigin=self.xmin, yorigin=self.ymin, angrot=0,
         )
         return disv
 
@@ -389,13 +389,40 @@ class ModelParameters(GridHandler):
         if self.base.is_mf2005():
             self.add_packages_mf2005()
 
+    def _package_geometry(self, pars, default, data):
+        results = self.process_geometry(pars)
+        if self.base.is_mf6():
+            par_array = np.ones(self.base.model.modelgrid.ncpl) * default
+            results = results.groupby('index_right')['dw'].mean().reset_index()
+            for i, row in results.iterrows():
+                if data:
+                    par_array[int(row.index_right)] = row[data]
+                else:
+                    raise ValueError("set column in geometry file")
+        else:
+            par_array = np.ones(self.base.model.modelgrid.idomain[0].shape) * default
+            par_array = par_array
+            results = results.groupby(['row', 'col'])['dw'].mean().reset_index()
+            for i, row in results.iterrows():
+                if data:
+                    par_array[(int(row.row), int(row.col))] = row[data]
+                else:
+                    raise ValueError("set column in geometry file")
+        return par_array
+
     def _add_package(self, pkg):
+        default = pkg.pop("default") if pkg.get("default") else 0
+        data = pkg.pop("data") if pkg.get("data") else None
         for pars_name in pkg:
             pars = pkg[pars_name]
             if isinstance(pars, list):
                 for i, par in enumerate(pars):
                     if self.is_raster(par):
                         pkg[pars_name][i] = self.resample_raster(par)
+            elif self.is_numeric(pars):
+                pkg[pars_name] = pars
+            elif self.is_vector(pars):
+                pkg[pars_name] = self._package_geometry(pars, default, data)
         return pkg
 
     def add_packages_mf2005(self):
@@ -408,22 +435,27 @@ class ModelParameters(GridHandler):
             if self.editing:
                 self.model.remove_package("RCH")
             rch_data = self._add_package(self.packages.get("rch"))
+            if type(rch_data.get("rech")) is np.ndarray:
+                rch_data["rech"] = rch_data["rech"].reshape((self.model.modelgrid.nrow, self.model.modelgrid.ncol))
             rch = flopy.modflow.ModflowRch(self.model, **rch_data)
+        if self.packages.get("bcf"):
+            if self.editing:
+                self.model.remove_package("BCF")
+            bcf_data = self._add_package(self.packages.get("bcf"))
+            bcf = flopy.modflow.ModflowBcf(self.model, **bcf_data)
 
     def add_packages_mf6(self):
         if not self.editing:
             ic_data = self._add_package(self.packages.get("ic"))
             ic = flopy.mf6.ModflowGwfic(self.model, **ic_data)
         if self.packages.get("npf"):
-            if self.editing:
-                self.model.remove_package("NPF")
-            npf_data = self._add_package(self.packages.get("npf"))
-            npf = flopy.mf6.ModflowGwfnpf(self.model, save_flows=True, **npf_data)
+            if not self.editing:
+                npf_data = self._add_package(self.packages.get("npf"))
+                npf = flopy.mf6.ModflowGwfnpf(self.model, save_flows=True, **npf_data)
         if self.packages.get("rch"):
-            if self.editing:
-                self.model.remove_package("RCH")
-            rch_data = self._add_package(self.packages.get("rch"))
-            rch = flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch_data["rech"]})
+            if not self.editing:
+                rch_data = self._add_package(self.packages.get("rch"))
+                rch = flopy.mf6.ModflowGwfrcha(self.model, recharge={0: rch_data["rech"]})
         if self.packages.get("sto"):
             if self.editing:
                 self.model.remove_package("STO")
@@ -478,22 +510,53 @@ class ModelSourcesSinks(GridHandler):
 
     def _spd_mf2005(self, results: pd.DataFrame, layers: List[int], option: Dict[str, Any]) -> List[Any]:
         all_results = []
-        for li, lay in enumerate(layers):
+        if isinstance(layers, list):
+            botm = self.model.dis.botm.array.copy()
+            top = self.model.dis.top.array.copy()
+            for li, lay in enumerate(layers):
+                for idx, row in results.iterrows():
+                    if self.is_in_idomain(row):
+                        if "depth" in results.columns:
+                            if row.depth <= botm[lay - 1, row.row, row.col]:
+                                botm[lay - 1, row.row, row.col] = row.depth - 0.1
+                            if row["stage"] < botm[lay - 1, row.row, row.col]:
+                                top[row.row, row.col] = row["stage"] + 0.1
+                        all_results.append([lay - 1, row.row, row.col, *row[list(option.keys())]])
+            for lay in range(self.model.modelgrid.nlay - 1, 0, -1):
+                botm[lay] = np.where(botm[lay - 1] - botm[lay] <= 1, botm[lay - 1] - 1, botm[lay])
+            self.model.dis.botm = botm
+            self.model.dis.top = top
+        else:
             for idx, row in results.iterrows():
                 if self.is_in_idomain(row):
-                    all_results.append([lay - 1, row.row, row.col, *row[list(option.keys())]])
+                    if "depth" in results.columns:
+                        if self.model.modelgrid.botm[row.lay - 1][row.row, row.col] >= row["stage"] - row.depth:
+                            self.model.modelgrid.botm[row.lay - 1][row.row, row.col] = row["stage"] - row.depth - 0.1
+                        if row.lay == 1 and self.model.modelgrid.top[row.row, row.col] <= row["stage"] - row.depth:
+                            self.model.modelgrid.top[row.row, row.col] = row["stage"] + 0.1
+                    all_results.append([row.lay - 1, row.row, row.col, *row[list(option.keys())]])
+
+        return all_results
+
+    def _add_to_spd(self, row, option, lay, all_results):
+        lay = int(lay)
+        if self.is_structured():
+            if self.is_in_idomain(row):
+                all_results.append([(lay - 1, row.row, row.col), *row[list(option.keys())]])
+        else:
+            if self.is_in_idomain(row):
+                all_results.append([(lay - 1, row.index_right), *row[list(option.keys())]])
         return all_results
 
     def _spd_mf6(self, results: pd.DataFrame, layers: List[int], option: Dict[str, Any]) -> List[Any]:
         all_results = []
-        for li, lay in enumerate(layers):
+        if isinstance(layers, list):
+            for li, lay in enumerate(layers):
+                for idx, row in results.iterrows():
+                    all_results = self._add_to_spd(row, option, lay, all_results)
+        else:
             for idx, row in results.iterrows():
-                if self.is_structured():
-                    if self.is_in_idomain(row):
-                        all_results.append([(lay - 1, row.row, row.col), *row[list(option.keys())]])
-                else:
-                    if self.is_in_idomain(row):
-                        all_results.append([(lay - 1, row.index_right), *row[list(option.keys())]])
+                all_results = self._add_to_spd(row, option, row.lay, all_results)
         return all_results
 
     def _prepare_spd_df(self, option):
@@ -510,18 +573,79 @@ class ModelSourcesSinks(GridHandler):
         step_std = {}
         for i, spd in package_data.items():
             all_results = []
-            if spd.get("add"):
-                std_ex = self.model.get_package(package_name.upper()).stress_period_data.data[i].tolist()
-                all_results.extend(std_ex)
+            if spd is not None:
+                if spd.get("add"):
+                    std_ex = self.model.get_package(package_name.upper()).stress_period_data.data[i].tolist()
+                    all_results.extend(std_ex)
+                for option in spd["data"]:
+                    results, layers = self._prepare_spd_df(option)
+                    if self.base.is_mf6():
+                        all_results.extend(self._spd_mf6(results, layers, option))
+                    if self.base.is_mf2005():
+                        all_results.extend(self._spd_mf2005(results, layers, option))
+                step_std[i] = self._delete_duplicates(all_results) if package_name != 'wel' else self._sum_duplicates(
+                    all_results)
+            else:
+                step_std[i] = {}
+        if self.editing:
+            self.model.remove_package(package_name)
+        return step_std
+
+    def _barrier_data(self, results, layers, option):
+        all_results = []
+        if isinstance(layers, list):
+            for li, lay in enumerate(layers):
+                for idx, row in results.iterrows():
+                    all_results.append([(lay - 1, row.cellid1),
+                                        (lay - 1, row.cellid2),
+                                        *row[list(option.keys())]])
+        return all_results
+
+    @staticmethod
+    def find_nearest_polygon(row, polygons_gdf):
+        centroid_point = row['geometry']
+        current_cellid = row['cellids']
+
+        filtered_polygons = polygons_gdf[polygons_gdf.index != current_cellid]
+
+        distances = filtered_polygons.geometry.distance(centroid_point)
+        nearest_polygon_index = distances.idxmin()
+        return nearest_polygon_index
+
+    def intersects_centroid(self, line, gr):
+        ix = gr.intersect(line.geometry, sort_by_cellid=False)
+        lines_ix = gpd.GeoDataFrame(ix, geometry=ix.ixshapes)
+        lines_ix = lines_ix.explode()
+        lines_ix.geometry = lines_ix.centroid
+        return lines_ix
+
+    def get_nearest_poly(self, df):
+        df["cellid1"] = df["cellids"]
+        df['cellid2'] = df.apply(self.find_nearest_polygon, polygons_gdf=self.grid_poly, axis=1)
+        return df
+
+    def _add_barrier(self, package_name: str) -> Dict[int, List[Any]]:
+        package_data = self.packages.get(package_name, {})
+        step_std = {}
+        for i, spd in package_data.items():
+            all_results = []
             for option in spd["data"]:
-                results, layers = self._prepare_spd_df(option)
-                if self.base.is_mf6():
-                    all_results.extend(self._spd_mf6(results, layers, option))
-                if self.base.is_mf2005():
-                    all_results.extend(self._spd_mf2005(results, layers, option))
-            step_std[i] = self._delete_duplicates(all_results)
+                geometry = option.pop("geometry")
+                layers = option.pop("layers")
+                lines = gpd.read_file(geometry)
+                gr = GridIntersect(self.model.modelgrid)
+                for idx, line in lines.iterrows():
+                    lines_ix = self.intersects_centroid(line, gr)
+                    lines_ix = self.process_parameters(option, lines_ix)
+                    lines_ix = self.get_nearest_poly(lines_ix)
+                    if self.base.is_mf6():
+                        all_results.extend(self._barrier_data(lines_ix, layers, option))
+                    if self.base.is_mf2005():
+                        pass
+
+            step_std[i] = all_results
             if self.editing:
-                self.remove_package(package_name)
+                self.model.remove_package(package_name)
         return step_std
 
     def _pars_raster(self, df, atr, atr_name):
@@ -532,6 +656,20 @@ class ModelSourcesSinks(GridHandler):
             df[atr_name] = par_val[df.index_right.values]
         return df
 
+    def _pars_exact(self, df, atr, atr_name):
+        df = pd.merge(df, self.grid_poly, how="left", left_on=["row", "col"], right_on=["row", "col"])
+        df['centroid'] = df.geometry_y.centroid
+        with rasterio.open(atr) as src:
+            def sample_raster(point):
+                row, col = ~affine * (point.x, point.y)
+                row, col = int(row), int(col)
+                return band[col, row]
+
+            affine = src.transform
+            band = src.read(1)
+            df[atr_name] = df['centroid'].apply(sample_raster)
+            return df
+
     def _pars_top(self, df, atr_name, calc_val=0.):
         top = self.model.modelgrid.top
         if self.is_structured():
@@ -541,29 +679,65 @@ class ModelSourcesSinks(GridHandler):
         return df
 
     def process_parameters(self, params: Dict[str, Any], results: pd.DataFrame) -> pd.DataFrame:
+        exact = params.pop("exact", None)
+        alongline = params.pop("alongline", None)
+        if alongline:
+            results["stage"] = results.geometry_y.centroid.apply(lambda node: self.linear_interpolation(node, alongline))
+            # FIXME: rewrite
+            # self.model.modelgrid.top[zip(results["row"], results["col"])] = results["stage"]
+            for idx, row in results.iterrows():
+                if self.model.modelgrid.botm[0][int(row["row"])][int(row["col"])] >= row["stage"] - row["depth"]:
+                    self.model.modelgrid.botm[0][int(row["row"])][int(row["col"])] = row["stage"] - row[
+                        "depth"] - 0.5
         for name, std_atr in params.items():
+            print(name, std_atr)
             if self.is_raster(std_atr):
-                results = self._pars_raster(results, std_atr, name)
+                if exact:
+                    results = self._pars_exact(results, std_atr, name)
+                else:
+                    results = self._pars_raster(results, std_atr, name)
             elif type(std_atr) is str and "top" in std_atr:
                 calc_val = std_atr.replace("top", "").replace(" ", "")
                 results = self._pars_top(results, name, calc_val=float(calc_val) if calc_val else 0)
             elif type(std_atr) is str and re.match(r"([a-zA-Z\s]+)([+-]\s*\d+)", std_atr):
                 atr, calc_val = self.separate_string_and_number(std_atr)
                 results[name] = results[atr] + float(calc_val)
+            elif type(std_atr) is str and re.match(r"([a-zA-Z\s]+)([+-]\s*[a-zA-Z\s]+)", std_atr):
+                atr1, atr2 = std_atr.split('-')
+                results[name] = results[atr1.strip()] - results[atr2.strip()]
             elif self.is_numeric(std_atr):
                 results[name] = std_atr
         return results
+
+    def _sum_duplicates(self, results: List[Any]) -> List[Any]:
+        sum_rate = {}
+        for sublist in results:
+            if self.base.is_mf6():
+                key = sublist[0]
+                value = float(sublist[1])
+            else:
+                key = (sublist[0], sublist[1], sublist[2])
+                value = float(sublist[3])
+            if sum_rate.get(key):
+                sum_rate[key] += value
+            else:
+                sum_rate[key] = value
+        if self.base.is_mf6():
+            return [[key, sum_rate[key]] for key in sum_rate]
+        else:
+            return [[*key, sum_rate[key]] for key in sum_rate]
 
     def _delete_duplicates(self, results: List[Any]) -> List[Any]:
         unique_list = []
         seen_tuples = set()
         for sublist in results:
-            if sublist[0] not in seen_tuples:
+            if self.base.is_mf6():
+                key = sublist[0]
+            else:
+                key = (sublist[0], sublist[1], sublist[2])
+            if key not in seen_tuples:
                 unique_list.append(sublist)
-                if self.base.is_mf6():
-                    seen_tuples.add(sublist[0])
-                if self.base.is_mf2005():
-                    seen_tuples.add((sublist[0], sublist[1], sublist[2]))
+                seen_tuples.add(key)
         return unique_list
 
     def _add_chd(self):
@@ -602,13 +776,20 @@ class ModelSourcesSinks(GridHandler):
             riv = flopy.modflow.ModflowRiv(self.model, stress_period_data=step_std)
 
     def _add_hfb(self):
-        step_std = self._add_source_sinks("hfb")
+        step_std = self._add_barrier("hfb")
         if self.base.is_mf6():
-            hfb = None
-            # hfb = flopy.mf6.ModflowGwfhfb(self.model, stress_period_data=step_std)
+            hfb = flopy.mf6.ModflowGwfhfb(self.model, stress_period_data=step_std)
         else:
             hfb = None
             # hfb = flopy.modflow.ModflowHfb(self.model, hfb_data=step_std)
+
+    def pnt_along_line(self, line):
+        # FIXME: change distance_delta considering modelgrid space
+        distance_delta = 0.1
+        distances = np.arange(0, line.length, distance_delta)
+        points = [line.interpolate(distance) for distance in distances]
+        # multipoint = unary_union(points)
+        return points
 
     def _add_oc(self):
         model_name = self.base.name
@@ -627,7 +808,32 @@ class ModelSourcesSinks(GridHandler):
             oc = flopy.modflow.ModflowOc(self.base.model, stress_period_data=spd, compact=True)
 
     def _add_pcg(self):
-        pcg = flopy.modflow.ModflowPcg(self.base.model)
+        pcg = flopy.modflow.ModflowPcg(self.base.model, mxiter=1000, hclose=0.0001, rclose=0.0001)
+
+    @staticmethod
+    def find_two_nearest_observations(node, gdf_obs):
+        distances = gdf_obs.geometry.apply(lambda obs: node.distance(obs))
+        nearest_two = distances.nsmallest(2).index
+        return nearest_two, distances[nearest_two]
+
+    # Function to perform linear interpolation between two nearest observation points
+    def linear_interpolation(self, node, gdf_obs):
+        # Get the two nearest observation points and their distances
+        gdf_obs = gpd.read_file(gdf_obs)
+        nearest_two, distances = self.find_two_nearest_observations(node, gdf_obs)
+
+        # Extract the stage values and distances of the nearest points
+        stage_values = gdf_obs.loc[nearest_two, 'z']
+        dist_1, dist_2 = distances.iloc[0], distances.iloc[1]
+        stage_1, stage_2 = stage_values.iloc[0], stage_values.iloc[1]
+
+        # Perform linear interpolation
+        if dist_1 + dist_2 > 0:
+            interpolated_value = (stage_1 * dist_2 + stage_2 * dist_1) / (dist_1 + dist_2)
+        else:
+            # In case the two points are extremely close
+            interpolated_value = stage_1
+        return interpolated_value
 
 
 class ModelObservations(GridHandler):
@@ -675,10 +881,11 @@ class ModelObservations(GridHandler):
         layers = option.get("layers")
         depth = option.get("depth")
         name = option.get("name")
-        if not name:
-            results["name"] = "H" + (results.reset_index().index + 1).astype(str)
-        else:
-            results["name"] = "H" + results[name.lower()].astype(str)
+        # if not name:
+        #     results["name"] = "H" + (results.reset_index().index + 1).astype(str)
+        # else:
+        # results["name"] = "H" + results[name.lower()].astype(str)
+        results["name"] = "H" + (results.reset_index().index + 1).astype(str)
         if not depth and layers:
             if type(layers) is str:
                 results["lay"] = results[layers]
@@ -705,22 +912,26 @@ class ModelObservations(GridHandler):
                 self.model, print_input=True, continuous=obsdict
             )
         else:
-            flopy.modflow.ModflowHob(self.model, obs_data=obsdict)
+            flopy.modflow.ModflowHob(self.model, obs_data=obsdict, iuhobsv=1)
 
     def wel_obs_func(self, row):
         if self.is_structured():
             if self.base.is_mf6():
-                return [f"{row['name']}", "HEAD", (row["lay"] - 1, row.row, row.col)]
+                return [f"{row['name']}", "HEAD", (int(row["lay"]) - 1, row.row, row.col)]
             else:
-                return flopy.modflow.HeadObservation(self.model, layer=row["lay"] - 1, row=row.row, column=row.col)
+                ts = [1, row["head"]]
+                return flopy.modflow.HeadObservation(self.model, obsname=row["name"],
+                                                     layer=int(row["lay"]) - 1, row=row.row, column=row.col,
+                                                     time_series_data=ts)
         else:
-            return [f"{row['name']}", "HEAD", (row["lay"] - 1, row.index_right)]
+            return [f"{row['name']}", "HEAD", (int(row["lay"]) - 1, row.index_right)]
 
     def get_lay_by_depth(self, row, top, botm):
         if row["depth"]:
             for i, bot in enumerate(botm):
                 if self.is_structured():
-                    if row["depth"] <= top[(int(row["row"]), int(row["col"]))] - bot[(int(row["row"]), int(row["col"]))]:
+                    if row["depth"] <= top[(int(row["row"]), int(row["col"]))] - bot[
+                        (int(row["row"]), int(row["col"]))]:
                         return i + 1
                 else:
                     if row["depth"] <= top[int(row["index_right"])] - bot[int(row["index_right"])]:
@@ -740,7 +951,8 @@ class ModelBuilder:
             self.grid = MfStructuredGrid(self.base, grid, editing)
         else:
             self.grid = MfUnstructuredGrid(self.base, grid, editing)
-        self.parameters = ModelParameters(self.base, config.get("parameters"), editing)
+        self.parameters = ModelParameters(self.base, config.get("parameters"), editing) if config.get(
+            "parameters") else None
         self.sources = ModelSourcesSinks(self.base, config.get("sources"), editing) if config.get(
             "sources") else None
         self.observations = ModelObservations(self.base, config.get("observations"), editing) if config.get(
