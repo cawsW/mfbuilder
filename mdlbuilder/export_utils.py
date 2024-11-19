@@ -37,6 +37,14 @@ class BaseExporter:
         head = hds.get_data(kstpkper=per)
         return head
 
+
+    def get_cbb(self, per):
+        cbbfile = f"{self.model.name}.cbb"
+        fname = os.path.join(self.model.model_ws, cbbfile)
+        cbb = flopy.utils.CellBudgetFile(fname)
+        riv = cbb.get_data(kstpkper=per, text="RIV")
+        return riv
+
     def get_npf(self):
         npf = self.model.get_package("NPF")
         return npf.k.array
@@ -84,7 +92,7 @@ class VectorExporter(BaseExporter):
 
     def _to_geom(self, df, name):
         vertices = []
-        for cell in df.cell:
+        for cell in df.cellid_cell:
             vertices.append(self.model.modelgrid.get_cell_vertices(cell))
         polygons = [Polygon(vrt) for vrt in vertices]
         recarray2shp(df.to_records(), geoms=polygons, shpname=name, crs=self.crs)
@@ -92,6 +100,11 @@ class VectorExporter(BaseExporter):
     def _pkg_to_geom(self, pkg):
         for per in range(self.model.nper):
             std = self.model.get_package(pkg).stress_period_data.get_dataframe().get(per, None)
+            if pkg == "RIV":
+                dfcbb = pd.DataFrame(self.get_cbb((per, 0))[0])
+                dfcbb["node"] = dfcbb["node"] - 1
+                std = pd.merge(std, dfcbb, how="inner", left_on="cellid_cell", right_on="node")
+            print(std)
             if std is not None:
                 self._to_geom(std, os.path.join(self.dir_vectors, f"{pkg.lower()}{per}.shp"))
 
@@ -184,6 +197,7 @@ class RasterExporter(VectorExporter):
             # [(f"head_{i}{step}_lay_", self.get_heads((step, i))) for i, per in enumerate(range(self.model.nper)) for step in
             #  range(self.model.modeltime.nstp[i])]
         )
+
         ex_arr.extend([("npf_lay_", self.get_npf())])
         rch = self.get_rch()
         if rch is not None:

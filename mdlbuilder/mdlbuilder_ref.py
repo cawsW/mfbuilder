@@ -14,6 +14,7 @@ from flopy.utils.gridgen import Gridgen
 from flopy.utils import GridIntersect
 from plpygis import Geometry
 from shapely import Polygon
+from statsmodels.graphics.tukeyplot import results
 
 from mdlbuilder.validators import ConfigValidator
 from mdlbuilder.handlers import GridHandler
@@ -51,7 +52,7 @@ class ModelBase:
             self._configure_simulation(sim)
             gwf = flopy.mf6.ModflowGwf(
                 sim, modelname=self.name, model_nam_file=f"{self.name}.nam", save_flows=True,
-                # newtonoptions="NEWTON UNDER_RELAXATION"
+                newtonoptions="NEWTON UNDER_RELAXATION"
             )
             self._configure_ims(sim)
         else:
@@ -337,13 +338,12 @@ class MfUnstructuredGrid(MfBaseGrid):
             nlay=self.nlay,
             nrow=self.n_row,
             ncol=self.n_col,
-            delr=self.delr,
-            delc=self.delc,
+            delr=self.delc,
+            delc=self.delr,
             top=0,
             botm=-10,
-            crs=self.proj_string,
             xul=self.xmin,
-            yul=self.ymax
+            yul=self.ymax,
         )
         return ms
 
@@ -364,19 +364,19 @@ class MfUnstructuredGrid(MfBaseGrid):
             nvert=nvert,
             vertices=vertices,
             cell2d=cell2d,
-            xorigin=self.xmin, yorigin=self.ymin, angrot=0,
         )
+        poly_arr = self.model.modelgrid.map_polygons
         return disv
 
     def create_dis(self):
         if not self.editing:
             disv = self._create_disv()
+            idomain, elevations = self._form_idomain()
+            disv.top = self.top
+            disv.botm = elevations
+            disv.idomain = idomain
         else:
             disv = self.model.get_package("DISV")
-        idomain, elevations = self._form_idomain()
-        disv.top = self.top
-        disv.botm = elevations
-        disv.idomain = idomain
 
 
 class ModelParameters(GridHandler):
@@ -545,17 +545,31 @@ class ModelSourcesSinks(GridHandler):
                 all_results.append([(lay - 1, row.row, row.col), *row[list(option.keys())]])
         else:
             if self.is_in_idomain(row):
-                all_results.append([(lay - 1, row.index_right), *row[list(option.keys())]])
+                all_results.append([(lay - 1, row.index_right), *row[list(option.keys())], row.name ])
         return all_results
 
     def _spd_mf6(self, results: pd.DataFrame, layers: List[int], option: Dict[str, Any]) -> List[Any]:
         all_results = []
+        botm = self.model.dis.botm.array.copy()
+        top = self.model.dis.top.array.copy()
         if isinstance(layers, list):
             for li, lay in enumerate(layers):
                 for idx, row in results.iterrows():
+                    if "depth" in results.columns:
+                        if row.depth <= botm[lay - 1, row.index_right]:
+                            botm[lay - 1, row.index_right] = row.depth - 0.1
+                        if row["stage"] < botm[lay - 1, row.index_right]:
+                            top[row.index_right] = row["stage"] + 0.1
                     all_results = self._add_to_spd(row, option, lay, all_results)
+            for lay in range(1, self.model.modelgrid.nlay):
+                botm[lay] = np.where(botm[lay - 1] - botm[lay] < 0.1, botm[lay - 1] - 0.1, botm[lay])
+
+            self.model.dis.botm = botm
+            self.model.dis.top = top
         else:
             for idx, row in results.iterrows():
+                if "stage" in results.columns:
+                    self.fix_riv(row)
                 all_results = self._add_to_spd(row, option, row.lay, all_results)
         return all_results
 
@@ -657,8 +671,12 @@ class ModelSourcesSinks(GridHandler):
         return df
 
     def _pars_exact(self, df, atr, atr_name):
-        df = pd.merge(df, self.grid_poly, how="left", left_on=["row", "col"], right_on=["row", "col"])
+        if self.base.is_mf6():
+            df = pd.merge(df, self.grid_poly, how="left", left_on="index_right", right_index=True)
+        else:
+            df = pd.merge(df, self.grid_poly, how="left", left_on=["row", "col"], right_on=["row", "col"])
         df['centroid'] = df.geometry_y.centroid
+
         with rasterio.open(atr) as src:
             def sample_raster(point):
                 row, col = ~affine * (point.x, point.y)
@@ -678,6 +696,17 @@ class ModelSourcesSinks(GridHandler):
             df[atr_name] = top[df.index_right.values] + calc_val
         return df
 
+    def fix_riv(self, row):
+        if not self.base.is_mf6():
+            if self.model.modelgrid.botm[0][int(row["row"])][int(row["col"])] >= row["stage"] - row["depth"]:
+                self.model.modelgrid.botm[0][int(row["row"])][int(row["col"])] = row["stage"] - row[
+                    "depth"] - 0.5
+        else:
+            if self.model.modelgrid.botm[0][int(row["index_right"])] >= row["depth"]:
+                self.model.modelgrid.botm[0][int(row["index_right"])] = row[
+                    "depth"] - 0.5
+
+
     def process_parameters(self, params: Dict[str, Any], results: pd.DataFrame) -> pd.DataFrame:
         exact = params.pop("exact", None)
         alongline = params.pop("alongline", None)
@@ -686,11 +715,9 @@ class ModelSourcesSinks(GridHandler):
             # FIXME: rewrite
             # self.model.modelgrid.top[zip(results["row"], results["col"])] = results["stage"]
             for idx, row in results.iterrows():
-                if self.model.modelgrid.botm[0][int(row["row"])][int(row["col"])] >= row["stage"] - row["depth"]:
-                    self.model.modelgrid.botm[0][int(row["row"])][int(row["col"])] = row["stage"] - row[
-                        "depth"] - 0.5
+                self.fix_riv(row)
+
         for name, std_atr in params.items():
-            print(name, std_atr)
             if self.is_raster(std_atr):
                 if exact:
                     results = self._pars_exact(results, std_atr, name)
