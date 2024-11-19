@@ -3,7 +3,6 @@ scipy
 numpy
 matplotlib
 seaborn
-psycopg2-binary
 pandas
 geopandas
 scikit-learn

@@ -14,8 +14,8 @@ class GridHandler:
     def __init__(self, base):
         self.base = base
         self.model = base.model
-        if self.model.modelgrid is not None:
-        # if (self.base.is_mf6() and self.model.modelgrid._idomain is not None) or self.base.is_mf2005():
+        # if self.model.modelgrid is not None:
+        if (self.base.is_mf6() and self.model.modelgrid._idomain is not None) or self.base.is_mf2005():
             self.grid_poly = self._grid_polygons()
 
     @staticmethod
@@ -142,6 +142,7 @@ class GridHandler:
         return self._process_intersections(layer)
 
     def process_geometry(self, geometry: Union[dict, str, list]) -> pd.DataFrame:
+        print(geometry)
         if isinstance(geometry, dict):
             return self._process_dict_geometry(geometry)
         elif self.is_vector(geometry):
