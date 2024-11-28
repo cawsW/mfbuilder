@@ -92,7 +92,7 @@ class OutputPicture:
         cx.add_basemap(ax, crs=self.epsg, attribution='', alpha=0.4, source=cx.providers.OpenStreetMap.Mapnik)
 
     def get_baselayer(self, blay_path):
-        blay_gdf = gpd.read_file(blay_path)
+        blay_gdf = gpd.read_file(blay_path, encoding="cp1251")
         blay_gdf.crs = self.epsg
         if self.border is not None:
             blay_gdf = gpd.sjoin(blay_gdf, self.border, how="inner")
@@ -177,10 +177,20 @@ class OutputPicture:
 
     def plot_raster(self):
         with rasterio.open(self.map.get("data"), crs=self.epsg) as src:
+
             if self.border is not None:
                 out_image, out_transform = self.crop_raster(src)
             else:
                 out_image, out_transform = src.read(1), src.transform
+
+            if self.map.get("crop"):
+
+                cropb = gpd.read_file(self.map.get("crop")).dissolve()
+                cropb = cropb.to_crs(src.crs)
+                cropb = gpd.clip(cropb, self.border, keep_geom_type=True)
+                out_image, out_transform = mask(src, cropb.geometry, crop=True)
+                out_image = np.ma.masked_array(out_image, mask=(out_image == src.nodata))
+
             if self.map.get("options"):
                 pltview = show(out_image, ax=self.ax, transform=out_transform,
                      **self.map.get("options"))
@@ -197,12 +207,23 @@ class OutputPicture:
         lay = self.get_lay() - 1
         data_match = {"heads": self.get_heads()[lay], "hk": np.log10(self.get_npf()[lay]),
                       "rch": self.get_rch(), "top": self.get_top(), "bot": self.get_bot()[lay]}
-        return data_match.get(data_name)
+        data = data_match.get(data_name)
+        if lay > 0:
+            idomain = np.where(self.model.modelgrid.botm[lay - 1] - self.model.modelgrid.botm[lay] <= 0.11, 0, 1)
+        else:
+            idomain = np.where(self.model.modelgrid.top - self.model.modelgrid.botm[0] <= 0.11, 0, 1)
+        if data_name == "hk":
+            for i, idm in enumerate(idomain):
+                if idm == 0:
+                    data[i] = np.nan
+        return data
 
     def plot_array(self):
         data = self.form_data()
         if data is not None:
+
             pltview = self.mapview.plot_array(a=data, alpha=0.7, cmap=self.map.get("cmap", "Blues"))
+            self.mapview.plot_ibound()
             cbar = plt.colorbar(pltview, shrink=0.75, orientation="horizontal", pad=0.01)
             if self.map.get("label"):
                 cbar.ax.set_xlabel(f'{self.map.get("label")}')
@@ -243,6 +264,14 @@ class OutputPicture:
                 out_image, out_transform = self.crop_raster(src)
             else:
                 out_image, out_transform = src.read(1), src.transform
+
+            if self.contours.get("crop"):
+
+                cropb = gpd.read_file(self.contours.get("crop")).dissolve()
+                cropb = cropb.to_crs(src.crs)
+                cropb = gpd.clip(cropb, self.border, keep_geom_type=True)
+                out_image, out_transform = mask(src, cropb.geometry, crop=True)
+                out_image = np.ma.masked_array(out_image, mask=(out_image == src.nodata))
             levels = self.init_cnt_levels(out_image)
             if self.contours.get("options"):
                 show(out_image, ax=self.ax, transform=out_transform, contour=True, levels=levels,

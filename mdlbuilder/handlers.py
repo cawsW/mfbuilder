@@ -15,7 +15,7 @@ class GridHandler:
         self.base = base
         self.model = base.model
         # if self.model.modelgrid is not None:
-        if (self.base.is_mf6() and self.model.modelgrid._idomain is not None) or self.base.is_mf2005():
+        if (self.base.is_mf6() and self.model.modelgrid._idomain is not None) or (self.base.is_mf2005() and self.model.modelgrid is not None):
             self.grid_poly = self._grid_polygons()
 
     @staticmethod
