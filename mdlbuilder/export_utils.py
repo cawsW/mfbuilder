@@ -11,6 +11,7 @@ from flopy.export.shapefile_utils import recarray2shp
 from flopy.discretization import StructuredGrid
 from flopy.utils.mflistfile import Mf6ListBudget
 from flopy.utils.geometry import Polygon
+from scipy.interpolate import RBFInterpolator
 from scipy.interpolate import griddata
 from shapely import Polygon
 from osgeo import gdal, ogr, osr
@@ -130,20 +131,22 @@ class RasterExporter(VectorExporter):
     def __init_boundary(self, boundary):
         if type(boundary) is str and os.path.exists(boundary):
             boundary = gpd.read_file(os.path.join(boundary), crs=self.crs)
+            boundary.geometry = boundary.buffer(1000)
+            print(boundary)
         elif type(boundary) is list:
             boundary = Polygon(boundary)
         return boundary
 
     def __init_bounds(self):
         if type(self.boundary) is gpd.GeoDataFrame:
-            xmin, ymin, xmax, ymax = self.boundary.total_bounds
+            xmin, ymin, xmax, ymax = map(int, self.boundary.total_bounds)
         else:
             xmin, ymin, xmax, ymax = self.boundary.bounds
         return xmin, ymin, xmax, ymax
 
     def get_num_cells(self):
-        range_x = (self.xmax - self.xmin) + 20 * self.size
-        range_y = (self.ymax - self.ymin) + 20 * self.size
+        range_x = self.xmax - self.xmin
+        range_y = self.ymax - self.ymin
         return int(range_x / self.size), int(range_y / self.size)
 
     def get_centroids(self):
@@ -161,17 +164,37 @@ class RasterExporter(VectorExporter):
     def _create_grid(self):
         num_cells_x, num_cells_y = self.get_num_cells()
         gridx, gridy = np.meshgrid(
-            np.linspace(self.xmin - 10 * self.size, self.xmax + 10 * self.size, num=num_cells_x),
-            np.linspace(self.ymin - 10 * self.size, self.ymax + 10 * self.size, num=num_cells_y)
+            np.linspace(self.xmin, self.xmax, num=num_cells_x),
+            np.linspace(self.ymin, self.ymax, num=num_cells_y)
         )
         return gridx, gridy
 
-    def _interpolate_data(self, array):
+    def _interpolate_data2(self, array):
         gridx, gridy = self._create_grid()
         original_coords = self.get_centroids()
         transform = from_origin(gridx.min(), gridy.max(), self.size, self.size)
         interpolated_data = griddata(original_coords, array.flatten(), (gridx, gridy), method='linear')
         return np.where(interpolated_data > 1e6, np.nan, interpolated_data), transform
+
+    def _interpolate_data(self, array):
+        gridx, gridy = self._create_grid()
+        grid_points = np.column_stack([gridx.ravel(), gridy.ravel()])
+        original_coords = self.get_centroids()
+
+        # Используем RBFInterpolator для интерполяции/экстраполяции
+        rbf_interpolator = RBFInterpolator(
+            original_coords,
+            array.flatten(),
+            kernel="thin_plate_spline",  # Альтернативы: 'multiquadric', 'cubic', 'thin_plate_spline'
+            neighbors=20,    # Сокращает количество точек для расчета в больших массивах
+        )
+
+        # Применяем интерполяцию/экстраполяцию
+        interpolated_data = rbf_interpolator(grid_points).reshape(gridx.shape)
+
+        # Создаем объект трансформации
+        transform = from_origin(gridx.min(), gridy.max(), self.size, self.size)
+        return interpolated_data, transform
 
     def create_raster(self, interpolated_data, transform, raster_name):
         new_dataset = rasterio.open(
@@ -212,6 +235,7 @@ class RasterExporter(VectorExporter):
 
     def arrays_to_raster(self, arrays):
         for name, arr in arrays:
+            print(name)
             for lay, la in enumerate(arr):
                 raster_name = os.path.join(self.dir_rasters, f"{name}{lay}.tif")
                 interpolate_data, transform = self._interpolate_data(la)

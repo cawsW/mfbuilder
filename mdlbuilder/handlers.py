@@ -107,7 +107,18 @@ class GridHandler:
         raise ValueError("Invalid geometry dictionary")
 
     def _process_intersections(self, layer):
-        join_pdf = layer.sjoin(self.grid_poly, how="left").dropna(subset=["index_right"])
+        if layer.geometry.geom_type.isin(['LineString', 'MultiLineString']).all():
+            # Если геометрия линии или мультилинии, рассчитываем длину пересечения
+            join_pdf = layer.sjoin(self.grid_poly, how="left").dropna(subset=["index_right"])
+            join_pdf['intersection_length'] = join_pdf.apply(
+                lambda row: True if row.geometry.intersection(self.grid_poly.loc[row['index_right']].geometry).length > 40 else False ,
+                axis=1
+            )
+            join_pdf = join_pdf[join_pdf['intersection_length']]
+
+            print(join_pdf)
+        else:
+            join_pdf = layer.sjoin(self.grid_poly, how="left").dropna(subset=["index_right"])
         return join_pdf.astype({"row": int, "col": int, "index_right": int})
 
     def _process_file_geometry(self, geometry: str) -> pd.DataFrame:
