@@ -9,6 +9,7 @@ import pandas as pd
 import geopandas as gpd
 import contextily as cx
 import rasterio
+from networkx.algorithms.bipartite.basic import color
 from rasterio.plot import show, adjust_band
 from rasterio.merge import merge
 from rasterio.io import MemoryFile
@@ -25,10 +26,13 @@ from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from textwrap import wrap
 from adjustText import adjust_text
 
+from flopy.utils import GridIntersect
+
 
 class OutputPicture:
     def __init__(self, epsg, model, name, subspace, base_objects, config, extent=None):
         rc('text', usetex=False)
+        rc('font', family='Times New Roman')
         self.epsg = epsg
         self.model = model
         self.name_pic = name
@@ -43,7 +47,7 @@ class OutputPicture:
             self.ax_inset = plt.subplot2grid((3, 3), (0, 2), rowspan=2)
             self.ax_legend = plt.subplot2grid((3, 3), (2, 2))
             self.ax_legend.set_axis_off()
-            self.fig.subplots_adjust(hspace=0.1, wspace=0.1)
+            self.fig.subplots_adjust(hspace=0.05, wspace=0.05)
             self.disable_ticks(self.ax_inset)
             self.set_sizebar(self.ax_inset, self.scale / 50)
         else:
@@ -68,7 +72,7 @@ class OutputPicture:
         else:
             self.border = None
         self.mapview = self.create_mapview()
-
+        self.add_grid = config.get("grid")
     @staticmethod
     def _create_dir(path: str) -> str:
         out_dir = os.path.join(path)
@@ -92,7 +96,7 @@ class OutputPicture:
         cx.add_basemap(ax, crs=self.epsg, attribution='', alpha=0.4, source=cx.providers.OpenStreetMap.Mapnik)
 
     def get_baselayer(self, blay_path):
-        blay_gdf = gpd.read_file(blay_path, encoding="cp1251")
+        blay_gdf = gpd.read_file(blay_path, encoding='cp1251')
         blay_gdf.crs = self.epsg
         if self.border is not None:
             blay_gdf = gpd.sjoin(blay_gdf, self.border, how="inner")
@@ -135,7 +139,7 @@ class OutputPicture:
     def create_legend(self):
         if self.subplot:
             leg = self.ax_legend.legend(handles=self.handles, labels=self.labels, prop={'size': 14},
-                                        loc='center', bbox_to_anchor=(0.5, 1))
+                                        loc='lower center', bbox_to_anchor=(0.5, 0.5))
         else:
             leg = self.ax.legend(handles=self.handles, labels=self.labels, loc='upper left', bbox_to_anchor=(1.04, 1),
                                  frameon=False,
@@ -175,32 +179,36 @@ class OutputPicture:
     def get_lay(self):
         return self.map.get("layer") if self.map.get("layer") is not None else 1
 
-    def plot_raster(self):
-        with rasterio.open(self.map.get("data"), crs=self.epsg) as src:
+    def plot_raster(self, map, ax):
+        with rasterio.open(map.get("data"), crs=self.epsg) as src:
 
             if self.border is not None:
                 out_image, out_transform = self.crop_raster(src)
             else:
                 out_image, out_transform = src.read(1), src.transform
 
-            if self.map.get("crop"):
+            if map.get("crop"):
 
-                cropb = gpd.read_file(self.map.get("crop")).dissolve()
+                cropb = gpd.read_file(map.get("crop")).dissolve()
                 cropb = cropb.to_crs(src.crs)
                 cropb = gpd.clip(cropb, self.border, keep_geom_type=True)
                 out_image, out_transform = mask(src, cropb.geometry, crop=True)
                 out_image = np.ma.masked_array(out_image, mask=(out_image == src.nodata))
-
-            if self.map.get("options"):
-                pltview = show(out_image, ax=self.ax, transform=out_transform,
-                     **self.map.get("options"))
             else:
-                pltview = show(out_image, ax=self.ax, transform=out_transform)
-        if self.map.get("label"):
+                if map.get("crop") == 0:
+                    out_image = np.where(out_image <=0.05, np.nan, out_image)
+                    out_image = np.ma.masked_array(out_image, mask=(out_image == src.nodata))
+
+            if map.get("options"):
+                pltview = show(out_image, ax=ax, transform=out_transform,
+                     **map.get("options"))
+            else:
+                pltview = show(out_image, ax=ax, transform=out_transform)
+        if map.get("label"):
             im = pltview.get_images()[0]
             cbar = plt.colorbar(im, shrink=0.75, orientation="horizontal", pad=0.01)
-            if self.map.get("label"):
-                cbar.ax.set_xlabel(f'{self.map.get("label")}')
+            if map.get("label"):
+                cbar.ax.set_xlabel(f'{map.get("label")}')
 
     def form_data(self):
         data_name = self.map.get("data")
@@ -208,11 +216,19 @@ class OutputPicture:
         data_match = {"heads": self.get_heads()[lay], "hk": np.log10(self.get_npf()[lay]),
                       "rch": self.get_rch(), "top": self.get_top(), "bot": self.get_bot()[lay]}
         data = data_match.get(data_name)
-        if lay > 0:
-            idomain = np.where(self.model.modelgrid.botm[lay - 1] - self.model.modelgrid.botm[lay] <= 0.11, 0, 1)
+        if self.map.get("crop"):
+            gr = GridIntersect(self.model.modelgrid, method='vertex')
+            pol = gpd.read_file(self.map.get("crop"))
+            ix = gr.intersect(pol.iloc[0].geometry)
+            ixs = [xx[0] for xx in ix]
+            idomain = np.zeros(self.model.modelgrid.botm[lay - 1].shape)
+            idomain[ixs] = 1
         else:
-            idomain = np.where(self.model.modelgrid.top - self.model.modelgrid.botm[0] <= 0.11, 0, 1)
-        if data_name == "hk":
+            if lay > 0:
+                idomain = np.where(self.model.modelgrid.botm[lay - 1] - self.model.modelgrid.botm[lay] <= 0.11, 0, 1)
+            else:
+                idomain = np.where(self.model.modelgrid.top - self.model.modelgrid.botm[0] <= 0.11, 0, 1)
+        if data_name == "hk" or data_name == "bot":
             for i, idm in enumerate(idomain):
                 if idm == 0:
                     data[i] = np.nan
@@ -245,41 +261,47 @@ class OutputPicture:
         return out_image, out_transform
 
     def init_cnt_levels(self, img):
-        if np.nanmean(img) > 1:
+        if np.nanmean(img) > 5 or np.nanmax(img) > 5:
             vmin = round(np.nanmin(img) / 5, 0) * 5
             vmax = round(np.nanmax(img) / 5, 0) * 5
+        elif np.nanmax(img) > 1 and np.nanmax(img) <= 5:
+            vmin = math.floor(np.nanmin(img))
+            vmax = math.ceil(np.nanmax(img))
         else:
             vmin = -1
             vmax = 1
-
         if self.contours.get("interval"):
             levels = np.arange(vmin, vmax, self.contours.get("interval"))
         else:
             levels = np.linspace(vmin, vmax, 10)
         return levels
 
-    def plot_cnt(self):
-        with rasterio.open(self.contours.get("path"), crs=self.epsg) as src:
+    def plot_cnt(self, contours, ax):
+        with rasterio.open(contours.get("path"), crs=self.epsg) as src:
             if self.border is not None:
                 out_image, out_transform = self.crop_raster(src)
             else:
                 out_image, out_transform = src.read(1), src.transform
 
-            if self.contours.get("crop"):
-
-                cropb = gpd.read_file(self.contours.get("crop")).dissolve()
+            if contours.get("crop"):
+                cropb = gpd.read_file(contours.get("crop")).dissolve()
                 cropb = cropb.to_crs(src.crs)
                 cropb = gpd.clip(cropb, self.border, keep_geom_type=True)
                 out_image, out_transform = mask(src, cropb.geometry, crop=True)
                 out_image = np.ma.masked_array(out_image, mask=(out_image == src.nodata))
-            levels = self.init_cnt_levels(out_image)
-            if self.contours.get("options"):
-                show(out_image, ax=self.ax, transform=out_transform, contour=True, levels=levels,
-                     **self.contours.get("options"))
             else:
-                show(out_image, ax=self.ax, transform=out_transform, contour=True, levels=levels)
-        if self.contours.get("label"):
-            self.cnt_handles(self.contours.get("options"), self.contours.get("label"))
+                if contours.get("crop") == 0:
+                    out_image = np.where(out_image <=0.05, np.nan, out_image)
+                    out_image = np.ma.masked_array(out_image, mask=(out_image == src.nodata))
+
+            levels = self.init_cnt_levels(out_image)
+            if contours.get("options"):
+                show(out_image, ax=ax, transform=out_transform, contour=True, levels=levels,
+                     **contours.get("options"))
+            else:
+                show(out_image, ax=ax, transform=out_transform, contour=True, levels=levels)
+        if contours.get("label"):
+            self.cnt_handles(contours.get("options"), contours.get("label"))
 
     def cnt_handles(self, cnt_options, label):
         marker_options = {"marker": "", "linewidth": 1, "linestyle": '-', 'color': cnt_options.get("colors")}
@@ -291,17 +313,10 @@ class OutputPicture:
         # trans_offset = mtransforms.offset_copy(self.ax.transData, fig=self.fig,
         #                                        x=0.01, y=0.01, units='inches')
         for x, y, label in zip(gdf.geometry.x, gdf.geometry.y, gdf[anno.get("by")]):
-            texts.append(ax.text(x, y, label, fontsize=anno.get("fontsize", 4), ha='center', va='top'))
-                                      # bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.3')))
-        adjust_text(texts, ax=ax,
-                    only_move={'text': 'xy', 'points': 'xy'},
-                    # expand_points=(1.2, 1.4),  # Expands the distance points can be moved
-                    # expand_text=(1.2, 1.4),  # Expands the distance text can be moved
-                    # force_text=0.5,  # Force of repulsion between texts
-                    # force_points=0.5,  # Force of repulsion from points
-                    autoalign='xy',  # Automatically align text for better fit
-                    # lim=150
-                    )#, expand=(2, 3)
+            texts.append(ax.text(x+1, y+1, label, fontsize=anno.get("fontsize", 4), color=anno.get("color", 'black')))
+                                 # bbox=dict(facecolor='white', alpha=0.5, boxstyle='round,pad=0.3')))
+        if anno.get("adjust"):
+            adjust_text(texts, ax=ax)#, expand=(2, 3)
 
     def res_legend(self, ax_res):
         legend = ax_res.get_legend()
@@ -319,8 +334,6 @@ class OutputPicture:
         cmap_res = LinearSegmentedColormap.from_list('rg', ["r", "w", "g"], N=256)
         clr_gdf = self.get_baselayer(self.clr_points.get("path"))
         clr_gdf = clr_gdf.dropna(subset=self.clr_points.get("by"))
-        print(clr_gdf)
-        print(clr_gdf.columns)
         ax_res = clr_gdf.plot(ax=self.ax, column=self.clr_points.get("by"), legend=True, cmap=cmap_res, scheme='quantiles', k=10,
                               edgecolors='black')
         self.res_legend(ax_res)
@@ -366,11 +379,11 @@ class OutputPicture:
                                options=self.base_objects.get("marker_options"))
         if self.map:
             if isinstance(self.map.get("data"), str) and os.path.isfile(self.map.get("data")):
-                self.plot_raster()
+                self.plot_raster(self.map, self.ax)
             else:
                 self.plot_array()
         if self.contours:
-            self.plot_cnt()
+            self.plot_cnt(self.contours, self.ax)
         if self.base_layers:
             for blay_inf in self.base_layers:
                 gdf = self.get_baselayer(blay_inf.get("path"))
@@ -399,8 +412,18 @@ class OutputPicture:
                 self.other_handles(typo=blay_inf.get("type_legend"),
                                    label=blay_inf.get("label"),
                                    options=blay_inf.get("marker_options"))
+
+                if blay_inf.get("map"):
+                    if isinstance(blay_inf["map"].get("data"), str) and os.path.isfile(blay_inf["map"].get("data")):
+                        self.plot_raster(blay_inf["map"], self.ax_inset)
+                    else:
+                        self.plot_array()
+
+                if blay_inf.get("contours"):
+                    self.plot_cnt(blay_inf.get("contours"), self.ax_inset)
             self.add_basemap(self.ax_inset)
             self.set_ax_border(self.ax_inset)
+
         if self.basemaps:
             for bm in self.basemaps:
                 self.show_map()
@@ -412,5 +435,7 @@ class OutputPicture:
         self.wrap_legend()
         self.create_legend()
         self.set_ax_border(self.ax)
+        if self.add_grid:
+            self.plot_grid()
         output = os.path.join(self.output_path, f"{self.name_pic}.png")
         plt.savefig(output, dpi=200, bbox_inches='tight')
