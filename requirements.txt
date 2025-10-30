@@ -24,3 +24,5 @@ osmnx
 pyemu
 jupyter_contrib_nbextensions
 contextily
+PyYAML
+pydantic

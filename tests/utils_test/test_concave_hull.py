@@ -155,14 +155,14 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 
-gdf = gpd.read_file(os.path.join("..", "..", "models", "raspadskaya", "input", "vector", "surface_quarry2023.shp"))
+gdf = gpd.read_file(os.path.join("..", "..", "dto", "raspadskaya", "input", "vector", "surface_quarry2023.shp"))
 # gdf_s = gdf.dissolve()
 # ch = gdf_s.geometry.concave_hull(allow_holes=False)
-# ch.to_file(os.path.join("..", "..", "models", "raspadskaya", "input", "vector", "drain2023.shp"))
+# ch.to_file(os.path.join("..", "..", "dto", "raspadskaya", "input", "vector", "drain2023.shp"))
 pts = gdf.get_coordinates().to_numpy()
 ch = ConcaveHull()
 ch.loadpoints(pts)
 ch.calculatehull()
 boundary_points = np.vstack(ch.boundary.exterior.coords.xy).T
 conv_gdf = gpd.GeoDataFrame(geometry=[Polygon(boundary_points)])
-conv_gdf.to_file(os.path.join("..", "..", "models", "raspadskaya", "input", "vector", "drain2023.shp"))
+conv_gdf.to_file(os.path.join("..", "..", "dto", "raspadskaya", "input", "vector", "drain2023.shp"))
