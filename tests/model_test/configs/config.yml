@@ -1,0 +1,89 @@
+default:
+  vector_dir: &vectors input/vector
+  raster_dir: &rasters input/raster
+base:
+  name: nvmsk
+  workspace: versions/model
+  version: mf6
+  units: DAYS
+  steady: True
+  exe: "../../bin/mf6"
+grid:
+  proj_string: "EPSG:2529"
+  boundary: !join [*vectors, border.shp]
+  type: unstructured
+  gridgen_exe: "../../bin/gridgen"
+  cell_size: 200
+  nlay: 7
+  top: !join [ *rasters, dem, dem_srtm.tif ]
+  botm:
+    - !join [ *rasters, bot_model, top_1_mod.tif ]
+    - !join [ *rasters, bot_model, top_2_mod.tif ]
+    - !join [ *rasters, bot_model, top_3_mod.tif ]
+    - !join [ *rasters, bot_model, top_4_mod.tif ]
+    - !join [ *rasters, bot_model, top_5_mod.tif ]
+    - !join [ *rasters, bot_model, top_6_mod.tif ]
+    - !join [ *rasters, bot_model, top_7_mod.tif ]
+  min_thickness: 0.1
+  refinement:
+    line:
+      - geometry: !join [*vectors, rivers_line.shp]
+        level: 1
+    polygon:
+      - geometry: !join [*vectors, rivers_pol.shp]
+        level: 1
+parameters:
+  npf:
+    k: [ "input/raster/km/hk1_init.tif",
+         "input/raster/km/hk2_init.tif",
+         "input/raster/km/hk3_init.tif",
+         "input/raster/km/hk4_init.tif",
+         "input/raster/km/hk5_init.tif",
+         "input/raster/km/hk6_init.tif",
+         9.25
+      ]
+#         [1.2, 0.00075, 10.7, 0.001, 1.17, 0.000087, 9.25]
+    k33overk: True
+    k33: [ "input/raster/km/vhk1_init.tif",
+         "input/raster/km/vhk2_init.tif",
+         "input/raster/km/vhk3_init.tif",
+         "input/raster/km/vhk4_init.tif",
+         "input/raster/km/vhk5_init.tif",
+         "input/raster/km/vhk6_init.tif",
+         0.2
+      ]
+#      [0.3, 0.3, 0.2, 0.1, 0.4, 0.2, 0.2]
+    icelltype: [0, 0, 0, 0, 0, 0, 0]
+  rch:
+    rech: 0.00019
+  ic:
+    strt: 300
+sources:
+  riv:
+    0:
+      data:
+        - geometry: !join [*vectors, rivers_line.shp]
+          exact: True
+          stage: !join [ *rasters, dem, dem_srtm_brn1.tif ]
+          cond: 1000
+          depth: stage - 3
+          layers:
+            - 1
+        - geometry: !join [*vectors, rivers_pol.shp]
+          exact: True
+          stage: !join [ *rasters, dem, dem_srtm_brn1.tif ]
+          cond: 1500
+          depth: stage - 7
+          layers:
+            - 1
+  wel:
+    0:
+      data:
+        - geometry: !join [*vectors, wells, wells_intake.shp]
+          layers: lay
+          rate: rate
+observations:
+  wells:
+    - geometry: !join [ *vectors, wells, wells_obs_clp.shp]
+      layers: lay
+      name: well_name

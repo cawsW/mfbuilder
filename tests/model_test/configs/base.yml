@@ -1,0 +1,39 @@
+default:
+  vector_dir: &vectors input/vector
+  raster_dir: &rasters input/raster
+base:
+  name: nvmsk
+  workspace: versions/current
+  version: mf6
+  units: DAYS
+  steady: True
+  exe: "../../bin/mf6"
+grid:
+  proj_string: "EPSG:2529"
+  boundary: !join [*vectors, border.shp]
+  type: unstructured
+  gridgen_exe: "../../bin/gridgen"
+  cell_size: 200
+  nlay: 7
+  top: !join [ *rasters, dem, dem_srtm.tif ]
+  botm:
+    - !join [ *rasters, bot_model, top_1_mod.tif ]
+    - !join [ *rasters, bot_model, top_2_mod.tif ]
+    - !join [ *rasters, bot_model, top_3_mod.tif ]
+    - !join [ *rasters, bot_model, top_4_mod.tif ]
+    - !join [ *rasters, bot_model, top_5_mod.tif ]
+    - !join [ *rasters, bot_model, top_6_mod.tif ]
+    - !join [ *rasters, bot_model, top_7_mod.tif ]
+  min_thickness: 0.1
+  refinement:
+    line:
+      - geometry: !join [*vectors, rivers_line.shp]
+        level: 1
+    polygon:
+      - geometry: !join [*vectors, rivers_pol.shp]
+        level: 1
+observations:
+  wells:
+    - geometry: !join [ *vectors, wells, wells_obs_clp.shp]
+      layers: lay
+      name: well_name

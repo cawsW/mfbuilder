@@ -1,6 +1,6 @@
 import os
 from osgeo import osr
-from mdlbuilder.futils import rename_and_reproject, get_osm, get_srtm, get_stream_net
+from mfbuilder.futils import rename_and_reproject, get_osm, get_srtm, get_stream_net
 
 srs = osr.SpatialReference()
 srs.ImportFromWkt(

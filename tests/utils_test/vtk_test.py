@@ -1,6 +1,6 @@
 import stat
 import os
-from mdlbuilder.workingTools import Mf6VtkGenerator
+from mfbuilder.workingTools import Mf6VtkGenerator
 exeName = "../bin/mf6"
 st = os.stat(exeName)
 os.chmod(exeName, st.st_mode | stat.S_IEXEC)

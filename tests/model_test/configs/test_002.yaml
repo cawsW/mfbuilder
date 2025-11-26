@@ -1,0 +1,16 @@
+base:
+  name: test_002
+  workspace: dto/model
+  engine: mf2005
+  units: DAYS
+grid:
+  type: structured
+  nlay: 7
+  cell_size: 10
+  xmin: 0
+  ymin: 0
+  nrow: 10
+  ncol: 10
+packages:
+  lpf:
+

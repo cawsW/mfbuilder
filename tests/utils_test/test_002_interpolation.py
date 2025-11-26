@@ -4,7 +4,7 @@ from osgeo import osr
 import pandas as pd
 import numpy as np
 from shapely.geometry import Point
-from mdlbuilder.interpolation import lines_to_points, prepare_point_df, kriging_interpolate, create_raster, find_anomaly, create_variogram
+from mfbuilder.interpolation import lines_to_points, prepare_point_df, kriging_interpolate, create_raster, find_anomaly, create_variogram
 
 srs = osr.SpatialReference()
 srs.ImportFromWkt(

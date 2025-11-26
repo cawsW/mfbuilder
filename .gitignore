@@ -14,5 +14,5 @@ venv/
 .env
 .ipynb_checkpoints
 archive/*
-models/
+projects/
 .DS_Store
