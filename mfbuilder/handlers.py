@@ -1,6 +1,8 @@
 from __future__ import annotations
 from pathlib import Path
 
+from scipy.constants import nautical_mile
+
 from mfbuilder.mf6.mfgrid import VertexGridMf6Builder, StructuredGridMf6Builder
 from mfbuilder.mf2005.mfgrid import StructuredGridMf2005Builder
 from mfbuilder.mf6.mfpackages_flow import MF6FlowPackageBuilder
@@ -91,7 +93,8 @@ class SourceSinksFactory:
         engine = ctx.base.engine
         grid_type = ctx.grid.type
         name = name.lower()
-        key = (name, engine, grid_type)
+        name_key = name.split('_')[0]
+        key = (name_key, engine, grid_type)
         handler_cls = self._map.get(key)
         if not handler_cls:
             raise ValueError(f"Неизвестная комбинация: пакет={name}, движок={engine}, сетка={grid_type}")

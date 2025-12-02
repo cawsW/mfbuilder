@@ -1,12 +1,12 @@
 import os
 from pathlib import Path
 import yaml
+import logging
 import flopy
 
 from mfbuilder.dto.base import ProjectConfig
 from mfbuilder.handlers import BuilderFactory, GridFactory, SourceSinksFactory, FlowParametersFactory, \
     ObservationFactory
-
 
 class LoaderYaml:
     @staticmethod
@@ -38,20 +38,30 @@ class Director:
         self.obs_factory = obs_factory
 
     def build(self, cfg: ProjectConfig):
+        logging.basicConfig(level=logging.INFO, filename=f"{cfg.base.name}_log.log", filemode="w",
+                            format="%(asctime)s %(levelname)s %(message)s")
         builder = self.builder_factory.create(cfg)
         model = builder.create_sim()
+        logging.info("sim created")
         grid_obj = self.grid_factory.create(cfg)
+
         grid = grid_obj.create_grid(model)
+        logging.info("grid created")
         pars = self.flow_factory.create(model, grid, cfg)
         pars.build()
+        logging.info("flow pars created")
         observations = self.obs_factory.create(model, grid, cfg)
         observations.build()
+        logging.info("obs created")
         for pkg_name in cfg.sources.keys():
             handler = self.sources_factory.create(cfg, pkg_name, grid)
             pkg = handler.build_package(model)
+            logging.info(f"{pkg_name} created")
 
         if cfg.outputs.write_input:
             builder.finalize()
+            logging.info(f"writing finish")
+
 
         if cfg.outputs.run:
             builder.run()

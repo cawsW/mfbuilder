@@ -1,8 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+.DS_Store
 
-# Django stuff:
 *.log
 *.pot
 
@@ -12,9 +12,9 @@ pip-delete-this-directory.txt
 .idea/
 venv/
 .env
+.venv/
 .ipynb_checkpoints
+
 archive/*
 projects/
-.DS_Store
 bin/
-.venv/

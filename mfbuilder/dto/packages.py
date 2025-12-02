@@ -11,6 +11,10 @@ class SourceSinksFeature(BaseModel):
     geometry: Path | shapely_base.BaseGeometry | list[shapely_base.BaseGeometry]
     exact: bool = Field(default=False, description="Точное совпадение с ячейками сетки")
     layers: list[int] | str | None = Field(default=None, description="Целевые слои (список или поле)")
+    # Опции для формирования boundname
+    boundname: str | None = Field(default=None, description="Один boundname на весь объект")
+    boundname_field: str | None = Field(default=None, description="Имя поля в GeoDataFrame для boundname")
+    boundname_prefix: str | None = Field(default=None, description="Префикс для автонумерации boundname")
 
     @classmethod
     def load_geometry(cls, geom):

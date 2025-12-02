@@ -71,7 +71,7 @@ class RchConfig(BaseModel):
 
     def load_array(self, grid):
         if isinstance(self.rech, (int, float)):
-            return np.full(grid.shape[1:], float(self.rech))
+            return float(self.rech)
         return RasterHandler(self.rech).resample_to_grid(grid)
 
 
@@ -87,5 +87,5 @@ class IcConfig(BaseModel):
 class FlowPackagesConfig(BaseModel):
     """Группировка всех 'flow' пакетов."""
     npf: NpfConfig | None = None
-    rch: RchConfig | None = None
+    rch: dict[int, RchConfig] | RchConfig | None = None
     ic: IcConfig | None = None

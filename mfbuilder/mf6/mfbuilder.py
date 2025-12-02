@@ -55,7 +55,7 @@ class MF6Builder:
             saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
             printrecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
         )
-        # self.sim.set_all_data_external(True)
+        self.sim.set_all_data_external(True)
         self.sim.write_simulation()
 
     def run(self) -> None:

@@ -111,6 +111,7 @@ class FieldResolverCache:
         self.grid = grid
         self.geom_gdf = geom_gdf
         self._cache = self._build_cache()
+        self._bound_counter = 0
 
     def _build_cache(self) -> dict[str, FieldResolver]:
         """Создаёт FieldResolver для всех параметров фичи."""
@@ -134,3 +135,22 @@ class FieldResolverCache:
         if hasattr(self.feature, "postprocess"):
             result = self.feature.postprocess(result)
         return result
+
+    def resolve_boundname(self, geom_gdf, geom_index) -> str | None:
+        """Определяет boundname: константа, поле или автонумерация по префиксу."""
+        f = self.feature
+        if getattr(f, "boundname", None):
+            return str(f.boundname)
+
+        field = getattr(f, "boundname_field", None)
+        if field:
+            if field not in geom_gdf.columns:
+                raise ValueError(f"В GeoDataFrame нет столбца '{field}' для boundname.")
+            return str(geom_gdf.iloc[geom_index][field])
+
+        prefix = getattr(f, "boundname_prefix", None)
+        if prefix:
+            self._bound_counter += 1
+            return f"{prefix}{self._bound_counter}"
+
+        return None

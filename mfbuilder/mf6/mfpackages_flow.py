@@ -39,5 +39,11 @@ class MF6FlowPackageBuilder:
         ModflowGwfic(self.model, strt=strt)
 
     def _build_rch(self):
-        rech = self.cfg.rch.load_array(self.grid)
-        ModflowGwfrcha(self.model, recharge=rech)
+        rch_cfg = self.cfg.rch
+
+        if isinstance(rch_cfg, dict):
+            rch_spd = {int(per): cfg.load_array(self.grid) for per, cfg in rch_cfg.items()}
+        else:
+            rch_spd = {0: rch_cfg.load_array(self.grid)}
+
+        ModflowGwfrcha(self.model, readasarrays=True, recharge=rch_spd)
