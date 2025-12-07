@@ -94,7 +94,6 @@ class VertexGridBuilder(BaseGridBuilder):
     def _add_refinement(self, features: list[RefinementFeature], geom_type: str) -> None:
         """Добавляет уточнение по уже валидированным геометриям."""
         for feature in features:
-            print(feature.geometry)
             self.g.add_refinement_features(
                 feature.geometry,
                 geom_type,

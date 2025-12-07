@@ -15,6 +15,7 @@ from mfbuilder.dto.packages import SourcesSinksConfig
 from mfbuilder.dto.packages_flow import FlowPackagesConfig
 from mfbuilder.dto.observations import ObservationsConfig
 from mfbuilder.dto.output import OutputsConfig
+from mfbuilder.dto.mvr import MvrConfig
 
 
 
@@ -88,3 +89,4 @@ class ProjectConfig(BaseModel):
     parameters: FlowPackagesConfig
     observations: ObservationsConfig
     outputs: OutputsConfig = Field(default_factory=OutputsConfig)
+    mvr: MvrConfig | None = Field(default=None, description="Конфигурация mover-пакета")

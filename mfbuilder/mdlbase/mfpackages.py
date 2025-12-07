@@ -1,20 +1,21 @@
 from typing import Generic
 
 from mfbuilder.dto.types import TGrid
-from mfbuilder.dto.packages import SourceSinksZone
+from mfbuilder.dto.packages import SourcePackageConfig
 from mfbuilder.utils.mfdata import  FieldResolverCache
 
 
 class BaseSourceSinksHandler(Generic[TGrid]):
     """Базовый обработчик пакета источников/стоков."""
 
-    def __init__(self, grid: TGrid, data: dict[int, SourceSinksZone]):
+    def __init__(self, grid: TGrid, config: SourcePackageConfig):
         """
         grid: объект сетки (StructuredGrid / VertexGrid)
-        data: список SourceFeature (уже провалидированных)
+        config: конфиг пакета (periods + флаги)
         """
         self.grid = grid
-        self.data = data
+        self.data = config.periods
+        self.mover = config.mover
         # Кешируем GeoDataFrame и пространственный индекс, чтобы не строить их на каждом вызове.
         grid_gdf = getattr(self.grid, "geo_dataframe", None)
         if grid_gdf is None:

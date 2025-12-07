@@ -208,7 +208,7 @@ class RefinementConfig(BaseModel):
 class VertexGridConfig(BaseGridConfig):
     type: Annotated[Literal[GridType.VERTEX], Field(GridType.VERTEX, exclude=True)]
     gridgen_path: Annotated[
-        DirectoryPath | FilePath | None, Field(default="grid", description="Путь до сохранения сетки gridgen")]
+        DirectoryPath | FilePath | None, Field(default="../output/vectors/grid", description="Путь до сохранения сетки gridgen")]
     gridgen_exe: Annotated[
         FilePath | None, Field(default="../../../bin/gridgen", description="Исполняемый файл Gridgen")]
     refinement: Annotated[RefinementConfig | None, Field(default=None, description="Параметры уточнения сетки")]

@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Any
-from pydantic import BaseModel, Field, ConfigDict, RootModel
+from pydantic import BaseModel, Field, ConfigDict, RootModel, model_validator
 from shapely.geometry import base as shapely_base
 
 
@@ -92,8 +92,34 @@ class SourceSinksZone(BaseModel):
     data: list[RivFeature | WelFeature | DrnFeature | GhbFeature]  # или Union позже
 
 
-class SourcesSinksConfig(RootModel[dict[str, dict[int, SourceSinksZone]]]):
-    """Модель для секции sources/sinks (универсальный словарь пакетов)."""
+class SourcePackageConfig(BaseModel):
+    """Конфигурация одного пакета источников/стоков с доп. флагами."""
+    mover: bool = False
+    periods: dict[int, SourceSinksZone] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy(cls, value: Any):
+        # Поддержка старого вида: {0: {...}, 1: {...}}
+        if isinstance(value, dict):
+            mover = value.get("mover", False)
+            periods = {int(k): v for k, v in value.items() if k != "mover"}
+            return {"mover": mover, "periods": periods}
+        return value
+
+    def __getitem__(self, key: int) -> SourceSinksZone:
+        return self.periods[key]
+
+
+class SourcesSinksConfig(RootModel[dict[str, SourcePackageConfig]]):
+    """Модель для секции sources/sinks (универсальный словарь пакетов с флагом mover)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_packages(cls, value: Any):
+        if isinstance(value, dict):
+            return {k: SourcePackageConfig.model_validate(v) for k, v in value.items()}
+        return value
 
     def __getitem__(self, key: str) -> Any:
         return self.root[key]

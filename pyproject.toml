@@ -20,7 +20,8 @@ dependencies = [
     "pysheds (>=0.5,<0.6)",
     "pykrige (>=1.7.3,<2.0.0)",
     "pyshp (>=3.0.2.post1,<4.0.0)",
-    "rasterstats (>=0.20.0,<0.21.0)"
+    "rasterstats (>=0.20.0,<0.21.0)",
+    "openpyxl (>=3.1.5,<4.0.0)"
 ]
 
 

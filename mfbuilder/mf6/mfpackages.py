@@ -36,7 +36,7 @@ class MF6VertexGhbHandler(VertexGridMixin):
 class MF6VertexDrnHandler(VertexGridMixin):
     def build_package(self, model: ModflowGwf):
         records = self.iterate_features(self.build_record)
-        return ModflowGwfdrn(model, stress_period_data=records, boundnames=True)
+        return ModflowGwfdrn(model, stress_period_data=records, boundnames=True, mover=self.mover)
 
     def build_record(self, layer, icell, cache, bname=None):
         vals = cache.resolve_all(icell)

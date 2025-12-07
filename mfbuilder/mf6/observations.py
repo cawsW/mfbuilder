@@ -34,7 +34,6 @@ class MF6ObservationsBuilder:
 
             # убираем NaN по уровню, но НЕ режем по году
             gdf = gdf[~gdf[obs_def.head].isna()]
-            print(obs_def)
             # проверка, что столбец year есть
             if obs_def.time not in gdf.columns:
                 raise ValueError("В GeoDataFrame нет столбца 'year'.")
