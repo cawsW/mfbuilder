@@ -66,6 +66,14 @@ class VectorLayerConfig(BaseLayerConfig):
     labels: LabelConfig = Field(default_factory=LabelConfig)
 
 
+class AnnotationLayerConfig(BaseLayerConfig):
+    type: Literal['annotation']
+    path: str
+    text_column: str
+    color: str = "black"
+    rotation: Union[float, str] = 0.0
+
+
 class RasterLayerConfig(BaseLayerConfig):
     type: Literal['raster']
     path: str
@@ -105,7 +113,7 @@ class FlopyLayerConfig(BaseLayerConfig):
     contours: bool = False
     contour_style: ContourStyleConfig = Field(default_factory=ContourStyleConfig)
 
-LayerConfigUnion = Union[BasemapConfig, VectorLayerConfig, RasterLayerConfig, FlopyLayerConfig]
+LayerConfigUnion = Union[BasemapConfig, VectorLayerConfig, AnnotationLayerConfig, RasterLayerConfig, FlopyLayerConfig]
 LayerConfig = Annotated[LayerConfigUnion, Field(discriminator='type')]
 
 

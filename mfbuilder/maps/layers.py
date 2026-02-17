@@ -16,7 +16,7 @@ from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 
 from mfbuilder.maps.protocols import IMapLayer
-from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig
+from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig, AnnotationLayerConfig
 
 
 class BasemapLayer(IMapLayer):
@@ -342,6 +342,66 @@ class RasterLayer(IMapLayer):
                          colors=c_style.colors,
                          linewidths=c_style.linewidths)
         ax.clabel(cnt, cnt.levels, inline=True, fontsize=c_style.fontsize)
+
+    def get_legend_handles(self) -> List[Any]:
+        return []
+
+
+class AnnotationLayer(IMapLayer):
+    def __init__(self, config: AnnotationLayerConfig, global_crs: Optional[str] = None):
+        super().__init__(config, global_crs)
+        self.config: AnnotationLayerConfig = config
+
+    def draw(self, ax: plt.Axes) -> None:
+        path = self.config.path
+        try:
+            gdf = gpd.read_file(path)
+        except Exception as e:
+            print(f"Error reading annotation file {path}: {e}")
+            return
+
+        if self.global_crs:
+            gdf = gdf.set_crs(self.global_crs, allow_override=True)
+
+        if self.config.text_column not in gdf.columns:
+            print(f"Warning: Annotation column '{self.config.text_column}' not found in {path}.")
+            return
+
+        for _, row in gdf.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+
+            if geom.geom_type == 'Point':
+                x, y = geom.x, geom.y
+            else:
+                centroid = geom.centroid
+                x, y = centroid.x, centroid.y
+
+            rotation = self._resolve_rotation(row)
+            ax.text(
+                x,
+                y,
+                str(row[self.config.text_column]),
+                color=self.config.color,
+                rotation=rotation,
+                zorder=self.config.zorder
+            )
+
+    def _resolve_rotation(self, row: gpd.GeoSeries) -> float:
+        rotation = self.config.rotation
+        if isinstance(rotation, str):
+            if rotation in row.index:
+                value = row.get(rotation)
+                try:
+                    return float(value) if value is not None else 0.0
+                except (TypeError, ValueError):
+                    return 0.0
+            try:
+                return float(rotation)
+            except ValueError:
+                return 0.0
+        return float(rotation)
 
     def get_legend_handles(self) -> List[Any]:
         return []

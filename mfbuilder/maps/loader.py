@@ -1,6 +1,6 @@
 from typing import Optional
 from mfbuilder.maps.protocols import IMapLayer
-from mfbuilder.maps.layers import VectorLayer, RasterLayer, BasemapLayer, FlopyLayer
+from mfbuilder.maps.layers import VectorLayer, RasterLayer, BasemapLayer, FlopyLayer, AnnotationLayer
 from mfbuilder.dto.maps import LayerConfig
 
 class LayerFactory:
@@ -14,5 +14,7 @@ class LayerFactory:
             return BasemapLayer(layer_conf, global_crs)
         elif layer_conf.type == 'flopy':
             return FlopyLayer(layer_conf, global_crs)
+        elif layer_conf.type == 'annotation':
+            return AnnotationLayer(layer_conf, global_crs)
         else:
             raise ValueError(f"Unknown layer type: {layer_conf.type}")
