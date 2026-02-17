@@ -52,6 +52,10 @@ class MapBuilder:
             'legend.fontsize': base_size,  # Шрифт в самой легенде
             'legend.title_fontsize': base_size + 1  # Заголовок легенды
         })
+        plt.rcParams.update({
+            'font.family': 'Times New Roman',
+            'font.size': base_size,
+        })
 
     def build(self):
         if self.config.main_map.xlim and self.config.main_map.ylim:
