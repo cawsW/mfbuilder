@@ -7,7 +7,7 @@ class StructuredGridMf2005Builder(StructuredGridBuilder):
     def props_grid(self):
         modelgrid = self._create_temp_dis()
         ncpl = (modelgrid.nrow, modelgrid.ncol)
-        top, botm = self._process_surface(ncpl, modelgrid)
+        top, botm, _ = self._process_surface(ncpl, modelgrid)
         return dict(
             nlay=self.data.nlay,
             nrow=self.data.nrow,

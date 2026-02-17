@@ -87,6 +87,6 @@ class ProjectConfig(BaseModel):
     grid: GridConfig
     sources: SourcesSinksConfig
     parameters: FlowPackagesConfig
-    observations: ObservationsConfig
+    observations: ObservationsConfig = None
     outputs: OutputsConfig = Field(default_factory=OutputsConfig)
     mvr: MvrConfig | None = Field(default=None, description="Конфигурация mover-пакета")

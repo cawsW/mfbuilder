@@ -39,6 +39,19 @@ class BaseGridBuilder:
             return arr
         raise TypeError(f"Некорректный тип поверхности: {type(sfr)}")
 
+    def _idomain(self, top, botms) -> np.ndarray:
+        """
+        Генерирует массив idomain на основе толщины слоев.
+        1 - если толщина слоя > 0
+        -1 - если толщина слоя <= 0
+        """
+        upper_surfaces = np.concatenate([top[None, ...], botms[:-1]], axis=0)
+        lower_surfaces = botms
+        thickness = upper_surfaces - lower_surfaces
+        idomain = np.where(thickness > 0, 1, -1).astype(np.int32)
+
+        return idomain
+
     def _process_surface(self, ncpl, modelgrid) -> (np.ndarray, np.ndarray):
         """Обрабатывает botm: вычисляет массивы всех поверхностей."""
         prev = self._read_surface(self.data.top, ncpl, modelgrid)
@@ -65,8 +78,9 @@ class BaseGridBuilder:
         srfs_rdc = RasterHandler.reduce_arrays(np.array(layers))
         if self.data.min_thickness > 0:
             srfs_rdc = RasterHandler.expand_arrays(srfs_rdc, self.data.min_thickness)
-
-        return srfs_rdc[0], srfs_rdc[1:]
+        top, botms = srfs_rdc[0], srfs_rdc[1:]
+        idomain = self._idomain(top, botms)
+        return top, botms, idomain
 
 
 class StructuredGridBuilder(BaseGridBuilder):
@@ -89,6 +103,7 @@ class VertexGridBuilder(BaseGridBuilder):
 
     def _active_domain(self) -> None:
         active_domain = Geometry(self.data.border.wkb).geojson["coordinates"]
+        print(self.data.border.wkb)
         self.g.add_active_domain([active_domain], list(range(self.data.nlay)))
 
     def _add_refinement(self, features: list[RefinementFeature], geom_type: str) -> None:

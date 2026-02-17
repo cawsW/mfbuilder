@@ -8,8 +8,9 @@ class StructuredGridMf6Builder(StructuredGridBuilder):
     def props_grid(self):
         modelgrid = self._create_temp_dis()
         ncpl = (modelgrid.nrow, modelgrid.ncol)
-        top, botm = self._process_surface(ncpl, modelgrid)
+        top, botm, idomain = self._process_surface(ncpl, modelgrid)
         idomain = self._active_domain(modelgrid)
+        #TODO объединить домены
         return dict(
             nlay=self.data.nlay,
             nrow=self.data.nrow,
@@ -36,9 +37,10 @@ class VertexGridMf6Builder(VertexGridBuilder):
             nlay=self.data.nlay,
             ncpl=ncpl,
             vertices=gridprops["vertices"],
-            cell2d=gridprops["cell2d"]
+            cell2d=gridprops["cell2d"],
+            crs=self.data.epsg
         )
-        gridprops["top"], gridprops["botm"] = self._process_surface(ncpl, modelgrid)
+        gridprops["top"], gridprops["botm"], gridprops["idomain"] = self._process_surface(ncpl, modelgrid)
         return gridprops
 
     def create_grid(self, model: ModflowGwf):

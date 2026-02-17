@@ -85,7 +85,7 @@ class FieldResolver:
 
         # 🔹 Растр (tif, asc)
         from pathlib import Path
-        if isinstance(self.value, (str, Path)) and Path(self.value).suffix.lower() in {'.tif', '.asc'}:
+        if isinstance(self.value, (str, Path)) and Path(self.value).suffix.lower() in {'.tif', '.asc', '.grd'}:
             if self._cached_array is None:
                 raster = RasterHandler(self.value)
                 self._cached_array = raster.resample_to_grid(self.grid)

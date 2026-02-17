@@ -116,6 +116,7 @@ class MF6ObservationsBuilder:
     def compare_results(self):
         """Сравнивает наблюдаемые и рассчитанные уровни (через flopy API)."""
         workspace = Path(self.model.simulation_data.mfpath.get_sim_path())
+        print(workspace)
         # out_csv = workspace / f"{self.model.name}.head_obs_output.csv"
         files = workspace.glob(f"{self.model.name}.time_head_obs_*.csv")
         df_sim = pd.concat((pd.read_csv(f) for f in files), ignore_index=True)
@@ -146,8 +147,6 @@ class MF6ObservationsBuilder:
 
         # 3️⃣ объединяем по имени
         df = df_sim.merge(df_obs, on="name", how="left")
-        print(df.dtypes)
-        print(df.head(10))
         df["simval"] = pd.to_numeric(df["simval"], errors="coerce")
         df["obsval"] = pd.to_numeric(df["obsval"], errors="coerce")
         # 4️⃣ считаем разницу

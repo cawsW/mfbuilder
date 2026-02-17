@@ -76,13 +76,16 @@ class RchConfig(BaseModel):
 
 
 class IcConfig(BaseModel):
-    strt: float | Path = 0.0
+    strt: list[float | Path] = 0.0
 
     def load_array(self, grid):
-        if isinstance(self.strt, (int, float)):
-            return np.full(grid.shape[1:], float(self.strt))
-        return RasterHandler(self.strt).resample_to_grid(grid)
-
+        heads = []
+        for ic in self.strt:
+            if isinstance(ic, (int, float)):
+                heads.append(np.full(grid.shape[1:], float(ic)))
+            else:
+                heads.append(RasterHandler(ic).resample_to_grid(grid))
+        return heads
 
 class FlowPackagesConfig(BaseModel):
     """Группировка всех 'flow' пакетов."""

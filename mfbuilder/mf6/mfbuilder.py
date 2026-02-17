@@ -25,7 +25,12 @@ class MF6Builder:
     def create_ims(self) -> None:
         ModflowIms(
             self.sim,
-            complexity="SIMPLE"
+            complexity="SIMPLE",
+            # linear_acceleration="BICGSTAB",
+            # outer_dvclose=1e-4,
+            # inner_dvclose=1e-5,
+            # rcloserecord=[0.1, "L2NORM_RCLOSE"],
+            # outer_maximum = 500
         )
 
     def create_sim(self) -> ModflowGwf:
@@ -42,6 +47,7 @@ class MF6Builder:
             self.sim,
             modelname=cfg.name,
             save_flows=True,
+            # newtonoptions="UNDER_RELAXATION",
         )
         return self.model
 

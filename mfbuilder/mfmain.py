@@ -77,7 +77,7 @@ class Director:
 
         if cfg.outputs.run:
             builder.run()
-        observations.compare_results()
+        # observations.compare_results()
 
         flopy.export.shapefile_utils.model_attributes_to_shapefile(os.path.join("..", "output", "vectors", "grid.shp"),
                                                                    ml=model)
