@@ -131,7 +131,10 @@ class MapBuilder:
             extra_handles = layer.get_legend_handles()
             for h in extra_handles:
                 # Дедупликация: добавляем только если такого лейбла еще нет
-                if h.get_label() not in labels:
+                if getattr(h, '_mfbuilder_force_legend', False):
+                    handles.append(h)
+                    labels.append(h.get_label())
+                elif h.get_label() not in labels:
                     handles.append(h)
                     labels.append(h.get_label())
 

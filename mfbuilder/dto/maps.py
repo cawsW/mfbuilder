@@ -62,6 +62,7 @@ class VectorLayerConfig(BaseLayerConfig):
     type: Literal['vector']
     path: str
     filter: Optional[str] = None
+    color_column: Optional[str] = None
     style: StyleConfig = Field(default_factory=StyleConfig)
     labels: LabelConfig = Field(default_factory=LabelConfig)
 

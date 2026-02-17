@@ -75,11 +75,13 @@ class VectorLayer(IMapLayer):
         super().__init__(config, global_crs)
         self.config: VectorLayerConfig = config
         self._detected_geom_type: Optional[str] = None
+        self._legend_items: List[Dict[str, Any]] = []
 
     def draw(self, ax: plt.Axes) -> None:
         path = self.config.path
 
         try:
+            self._legend_items = []
             gdf = self._load_and_process_data()
 
             if gdf is None or gdf.empty:
@@ -93,7 +95,7 @@ class VectorLayer(IMapLayer):
                 else:
                     self._detected_geom_type = 'point'
 
-            plot_kwargs = self._prepare_style(ax)
+            plot_kwargs = self._prepare_style(ax, gdf)
             gdf.plot(**plot_kwargs)
 
             if self.config.labels.enabled:
@@ -137,7 +139,7 @@ class VectorLayer(IMapLayer):
         except ValueError:
             return gdf
 
-    def _prepare_style(self, ax: plt.Axes) -> Dict[str, Any]:
+    def _prepare_style(self, ax: plt.Axes, gdf: gpd.GeoDataFrame) -> Dict[str, Any]:
         style = self.config.style
         kwargs = {
             'ax': ax,
@@ -146,23 +148,91 @@ class VectorLayer(IMapLayer):
             'alpha': style.alpha
         }
 
-        if style.color: kwargs['color'] = style.color
+        if self.config.color_column and self.config.color_column in gdf.columns:
+            column = self.config.color_column
+            valid_values = gdf[column].dropna().values
+            if valid_values.size > 0:
+                vmin = style.vmin if style.vmin is not None else float(np.min(valid_values))
+                vmax = style.vmax if style.vmax is not None else float(np.max(valid_values))
+                bins = self._build_bins(valid_values, vmin, vmax, style.classification, style.n_classes)
+                cmap_name = style.cmap or 'viridis'
+                if bins is not None and len(bins) > 1:
+                    cmap = plt.get_cmap(cmap_name, len(bins) - 1)
+                    norm = BoundaryNorm(boundaries=bins, ncolors=len(bins) - 1)
+                    kwargs['column'] = column
+                    kwargs['cmap'] = cmap
+                    kwargs['norm'] = norm
+                    self._legend_items = self._build_legend_items(bins, cmap)
+                    kwargs['label'] = '_nolegend_'
+                else:
+                    kwargs['column'] = column
+                    kwargs['cmap'] = cmap_name
+                    kwargs['vmin'] = vmin
+                    kwargs['vmax'] = vmax
+
+        if style.color and 'column' not in kwargs: kwargs['color'] = style.color
         if style.edgecolor: kwargs['edgecolor'] = style.edgecolor
         if style.linewidth: kwargs['linewidth'] = style.linewidth
         if style.markersize: kwargs['markersize'] = style.markersize
         if style.marker: kwargs['marker'] = style.marker
         if style.linestyle: kwargs['linestyle'] = style.linestyle
-        if style.facecolor: kwargs['facecolor'] = style.facecolor
-        if style.cmap: kwargs['cmap'] = style.cmap
-        if 'color' not in kwargs and 'facecolor' not in kwargs and not style.cmap:
+        if style.facecolor and 'column' not in kwargs: kwargs['facecolor'] = style.facecolor
+        if style.cmap and 'cmap' not in kwargs: kwargs['cmap'] = style.cmap
+        if 'color' not in kwargs and 'facecolor' not in kwargs and 'column' not in kwargs and not style.cmap:
             kwargs['color'] = 'blue'
 
         return kwargs
+
+    @staticmethod
+    def _build_bins(values: np.ndarray, vmin: float, vmax: float, classification: str, n_classes: int) -> Optional[np.ndarray]:
+        if n_classes < 1:
+            return None
+        if classification == 'quantile':
+            bins = np.percentile(values, np.linspace(0, 100, n_classes + 1))
+            bins = np.unique(bins)
+            return bins if len(bins) > 1 else None
+        if vmin == vmax:
+            return None
+        return np.linspace(vmin, vmax, n_classes + 1)
+
+    def _build_legend_items(self, bins: np.ndarray, cmap) -> List[Dict[str, Any]]:
+        items = []
+        for idx in range(len(bins) - 1):
+            color = cmap(idx)
+            start = bins[idx]
+            end = bins[idx + 1]
+            items.append({'label': f"{start:.3g} - {end:.3g}", 'color': color})
+        return items
 
     def get_legend_handles(self) -> List[Any]:
         """
         Генерирует элементы легенды на основе РЕАЛЬНОГО типа геометрии.
         """
+        if self._legend_items:
+            handles = []
+            style = self.config.style
+            marker = style.marker or 'o'
+            # marker_size = (style.markersize or 6) / 2.5
+            marker_size = 10
+            if self.config.label:
+                header = Line2D([0], [0], color='none', ls='', label=self.config.label)
+                setattr(header, '_mfbuilder_force_legend', True)
+                handles.append(header)
+            for item in self._legend_items:
+                handle = Line2D(
+                    [0], [0],
+                    marker=marker,
+                    color='none',
+                    ls='',
+                    markerfacecolor=item['color'],
+                    markeredgecolor=style.edgecolor or 'black',
+                    markersize=marker_size,
+                    label=item['label']
+                )
+                setattr(handle, '_mfbuilder_force_legend', True)
+                handles.append(handle)
+            return handles
+
         label = self.config.label
         if not label:
             return []
@@ -202,7 +272,7 @@ class VectorLayer(IMapLayer):
                 ls='',
                 markerfacecolor=color,
                 markeredgecolor=style.edgecolor or 'white',
-                markersize=(style.markersize or 5) / 2,
+                markersize=(style.markersize or 5) * 0.3,
                 alpha=style.alpha,
                 label=label
             )]
