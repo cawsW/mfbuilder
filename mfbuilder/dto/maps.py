@@ -81,6 +81,7 @@ class RasterLayerConfig(BaseLayerConfig):
     clip_by: Optional[str] = None
     style: StyleConfig = Field(default_factory=StyleConfig)
     contours: bool = False
+    contour_use_head: bool = False
     contour_style: ContourStyleConfig = Field(default_factory=ContourStyleConfig)
     colorbar: ColorbarConfig = Field(default_factory=ColorbarConfig)
 
@@ -98,7 +99,7 @@ class FlopyLayerConfig(BaseLayerConfig):
     # Настройки отображения данных (массива)
     style: StyleConfig = Field(default_factory=StyleConfig)
     log_scale: bool = False  # Логарифмическая шкала (для фильтрации)
-    masked_values: List[float] = [0, 1e30, -1e30, -999.99]  # Значения, считающиеся "нет данных"
+    masked_values: List[float] = [0, 1e30, -1e30, -999.99, 999.0, -999.00, 999.99]  # Значения, считающиеся "нет данных"
 
     # Настройки сетки
     grid_enabled: bool = False
@@ -116,6 +117,27 @@ class FlopyLayerConfig(BaseLayerConfig):
 
 LayerConfigUnion = Union[BasemapConfig, VectorLayerConfig, AnnotationLayerConfig, RasterLayerConfig, FlopyLayerConfig]
 LayerConfig = Annotated[LayerConfigUnion, Field(discriminator='type')]
+
+class CrossSectionConfig(BaseModel):
+    enabled: bool = False
+    model_ws: Optional[str] = None
+    model_nam: Optional[str] = None
+    line_path: Optional[str] = None
+    line_filter: Optional[str] = None
+    line_label_start: str = "A"
+    line_label_end: str = "B"
+    show_line_on_map: bool = False
+    line_color: str = "red"
+    line_width: float = 1.5
+    line_label_offset_points: int = 6
+    parameter: Literal['head', 'k1', 'k2', 'k3'] = 'head'
+    stress_period: int = 0
+    style: StyleConfig = Field(default_factory=StyleConfig)
+    masked_values: List[float] = [0, 1e30, -1e30, -999.99, 999.0, -999.00, 999.99]
+    grid_color: str = "gray"
+    grid_linewidth: float = 0.3
+    contours: bool = False
+    contour_style: ContourStyleConfig = Field(default_factory=ContourStyleConfig)
 
 
 class MapAreaConfig(BaseModel):
@@ -150,3 +172,4 @@ class RootConfig(BaseModel):
     main_map: MapAreaConfig
     inset_map: InsetMapConfig = Field(default_factory=InsetMapConfig)
     legend: List[LegendItem] = []
+    cross_section: CrossSectionConfig = Field(default_factory=CrossSectionConfig)

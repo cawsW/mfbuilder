@@ -9,6 +9,7 @@ import textwrap
 
 from mfbuilder.maps.layout import MapLayout
 from mfbuilder.maps.loader import LayerFactory
+from mfbuilder.maps.layers import FlopyCrossSection
 from mfbuilder.dto.maps import RootConfig
 
 
@@ -24,7 +25,8 @@ class MapBuilder:
 
         self.layout = MapLayout(
             figsize=self.config.settings.figsize,
-            use_inset=self.config.inset_map.enabled
+            use_inset=self.config.inset_map.enabled,
+            use_section=self.config.cross_section.enabled
         )
 
         self.main_layers = []
@@ -83,6 +85,8 @@ class MapBuilder:
         self._compile_legend()
 
         self._add_colorbars()
+
+        self._draw_cross_section()
 
         print(f"Saving map to {self.config.settings.output}...")
         self.layout.save(self.config.settings.output)
@@ -176,3 +180,13 @@ class MapBuilder:
             # Опционально: выравнивание текста по левому краю, если Matplotlib центрирует многострочный текст
             for text in leg.get_texts():
                 text.set_ha('left')
+
+    def _draw_cross_section(self):
+        if not self.config.cross_section.enabled:
+            return
+        if not self.layout.ax_section:
+            return
+        section = FlopyCrossSection(self.config.cross_section, self.project_crs)
+        if self.layout.ax_main:
+            section.draw_line_on_map(self.layout.ax_main)
+        section.draw(self.layout.ax_section)

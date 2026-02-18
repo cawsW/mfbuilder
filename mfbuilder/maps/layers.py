@@ -1,5 +1,5 @@
 import os
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, Tuple
 
 import numpy as np
 import geopandas as gpd
@@ -475,6 +475,281 @@ class AnnotationLayer(IMapLayer):
 
     def get_legend_handles(self) -> List[Any]:
         return []
+
+
+class FlopyCrossSection:
+    _model_cache = {}
+
+    def __init__(self, config, global_crs: Optional[str] = None):
+        self.config = config
+        self.global_crs = global_crs
+        self.model = self._load_model()
+        self._line_coords: Optional[List[Tuple[float, float]]] = None
+
+    def draw(self, ax: plt.Axes) -> None:
+        if not self.model:
+            return
+
+        line = self._load_line_coords()
+        if not line:
+            return
+
+        pmv = flopy.plot.PlotCrossSection(model=self.model, line={'line': line}, ax=ax)
+        data = self._get_array_data()
+        if data is None:
+            return
+
+        style = self.config.style
+        cmap = plt.get_cmap(style.cmap or 'viridis')
+
+        pa = pmv.plot_array(
+            data,
+            head=data,
+            cmap=cmap,
+            vmin=style.vmin,
+            vmax=style.vmax,
+            alpha=style.alpha,
+            masked_values=self.config.masked_values
+        )
+        head = self._get_heads_data()
+        wt = pmv.plot_surface(head, color="blue", lw=2.5)
+        pmv.plot_grid(color=self.config.grid_color, linewidth=self.config.grid_linewidth)
+        # plt.colorbar(pa, shrink=0.75)
+
+        if self.config.contours:
+            c_style = self.config.contour_style
+            levels = c_style.levels
+            if not levels:
+                levels = self._calculate_auto_levels(data)
+            try:
+                cs = pmv.contour_array(
+                    data,
+                    head=data,
+                    masked_values=self.config.masked_values,
+                    levels=levels,
+                    colors=c_style.colors,
+                    linewidths=c_style.linewidths
+                )
+                if cs is not None:
+                    ax.clabel(cs, inline=True, fontsize=c_style.fontsize)
+            except RuntimeError as e:
+                print(f"Warning: contour_array failed: {e}")
+
+        self._label_section_ends(ax)
+
+    def _load_line_coords(self) -> Optional[List[Tuple[float, float]]]:
+        if self._line_coords is not None:
+            return self._line_coords
+        path = self.config.line_path
+        if not path:
+            print("Warning: Cross-section line_path is not set.")
+            return None
+        try:
+            gdf = gpd.read_file(path)
+        except Exception as e:
+            print(f"Error reading cross-section line {path}: {e}")
+            return None
+
+        if self.global_crs:
+            gdf = gdf.set_crs(self.global_crs, allow_override=True)
+
+        if self.config.line_filter:
+            gdf = self._apply_filter(gdf, self.config.line_filter)
+
+        if gdf.empty:
+            return None
+
+        geom = gdf.geometry.iloc[0]
+        if geom is None or geom.is_empty:
+            return None
+
+        if geom.geom_type == 'LineString':
+            self._line_coords = list(geom.coords)
+            return self._line_coords
+
+        if geom.geom_type == 'MultiLineString':
+            longest = max(geom.geoms, key=lambda g: g.length, default=None)
+            self._line_coords = list(longest.coords) if longest else None
+            return self._line_coords
+
+        print("Warning: Cross-section line geometry must be LineString.")
+        return None
+
+    def _label_section_ends(self, ax: plt.Axes) -> None:
+        label_start = getattr(self.config, "line_label_start", "A")
+        label_end = getattr(self.config, "line_label_end", "B")
+        x_min, x_max = ax.get_xlim()
+        y_pos = 1.02
+        ax.text(
+            x_min, y_pos, label_start,
+            transform=ax.get_xaxis_transform(),
+            ha='left', va='bottom'
+        )
+        ax.text(
+            x_max, y_pos, label_end,
+            transform=ax.get_xaxis_transform(),
+            ha='right', va='bottom'
+        )
+
+    def _get_model_elevation_limits(self):
+        if self.model is None or not hasattr(self.model, "modelgrid"):
+            return None, None
+        grid = self.model.modelgrid
+        try:
+            top = np.asarray(grid.top, dtype=float)
+            botm = np.asarray(grid.botm, dtype=float)
+        except Exception:
+            return None, None
+
+        top_vals = top[np.isfinite(top)]
+        botm_vals = botm[np.isfinite(botm)]
+        if top_vals.size == 0 or botm_vals.size == 0:
+            return None, None
+        return float(np.min(botm_vals)), float(np.max(top_vals))
+
+    def draw_line_on_map(self, ax: plt.Axes) -> None:
+        if not getattr(self.config, "show_line_on_map", False):
+            return
+        line = self._load_line_coords()
+        if not line:
+            return
+        xs, ys = zip(*line)
+        ax.plot(
+            xs,
+            ys,
+            color=self.config.line_color,
+            linewidth=self.config.line_width,
+            linestyle='-',
+            zorder=100
+        )
+        label_start = getattr(self.config, "line_label_start", "A")
+        label_end = getattr(self.config, "line_label_end", "B")
+        offset = getattr(self.config, "line_label_offset_points", 6)
+        ax.annotate(
+            label_start,
+            xy=(xs[0], ys[0]),
+            xytext=(offset, -offset),
+            textcoords="offset points",
+            fontsize=14,
+            ha='left',
+            va='bottom'
+        )
+        ax.annotate(
+            label_end,
+            xy=(xs[-1], ys[-1]),
+            xytext=(offset, offset),
+            textcoords="offset points",
+            fontsize=14,
+            ha='left',
+            va='bottom'
+        )
+
+    @staticmethod
+    def _apply_filter(gdf: gpd.GeoDataFrame, query: str) -> gpd.GeoDataFrame:
+        try:
+            col, val = query.split('=', 1)
+            if col not in gdf.columns:
+                print(f"Warning: Filter column '{col}' not found.")
+                return gdf
+
+            if gdf[col].dtype == 'O':
+                return gdf[gdf[col] == val]
+            try:
+                num_val = float(val)
+                return gdf[gdf[col] == num_val]
+            except ValueError:
+                return gdf[gdf[col] == val]
+        except ValueError:
+            return gdf
+
+    def _calculate_auto_levels(self, data, n_levels=10):
+        valid_data = data.compressed() if isinstance(data, np.ma.MaskedArray) else data[~np.isnan(data)]
+        if valid_data.size == 0:
+            return None
+
+        vmin, vmax = valid_data.min(), valid_data.max()
+        if vmin == vmax:
+            return [vmin]
+
+        raw_step = (vmax - vmin) / n_levels
+        step = 10 ** np.floor(np.log10(raw_step))
+        if raw_step / step > 5:
+            step *= 5
+        elif raw_step / step > 2:
+            step *= 2
+
+        levels = np.arange(np.floor(vmin / step) * step,
+                           np.ceil(vmax / step) * step + step,
+                           step)
+        return levels
+
+    def _load_model(self):
+        ws = self.config.model_ws
+        name = self.config.model_nam
+        if not ws:
+            print("Warning: Cross-section model_ws is not set.")
+            return None
+        cache_key = (ws, name)
+
+        if cache_key in self._model_cache:
+            return self._model_cache[cache_key]
+
+        print(f"Loading MODFLOW model from {ws}...")
+        try:
+            sim = flopy.mf6.MFSimulation.load(
+                sim_ws=ws,
+                verbosity_level=0
+            )
+            model = sim.get_model(name) if name else sim.get_model()
+            self._model_cache[cache_key] = model
+            return model
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return None
+
+    def _get_array_data(self):
+        param_name = self.config.parameter.lower()
+        if param_name == 'head':
+            return self._get_heads_data()
+        if param_name == 'k1':
+            return self._get_npf_array('k')
+        if param_name == 'k2':
+            return self._get_npf_array('k22')
+        if param_name == 'k3':
+            return self._get_npf_array('k33')
+        return None
+
+    def _get_npf_array(self, attr_name: str):
+        if not hasattr(self.model, 'npf'):
+            return None
+        npf = self.model.npf
+        if hasattr(npf, attr_name):
+            arr = getattr(npf, attr_name)
+            return arr.array if hasattr(arr, 'array') else arr
+        if hasattr(npf, 'k'):
+            arr = npf.k
+            return arr.array if hasattr(arr, 'array') else arr
+        return None
+
+    def _get_heads_data(self):
+        try:
+            if hasattr(self.model, 'output') and hasattr(self.model.output, 'head'):
+                head_obj = self.model.output.head()
+                if head_obj is not None:
+                    return head_obj.get_data(kstpkper=(0, self.config.stress_period))
+        except Exception:
+            pass
+
+        model_name = self.config.model_nam or getattr(self.model, 'name', None)
+        if not model_name:
+            return None
+        head_file = os.path.join(self.config.model_ws, f"{model_name}.hds")
+        try:
+            head = flopy.utils.HeadFile(head_file)
+            return head.get_data(kstpkper=(0, self.config.stress_period))
+        except Exception as e:
+            print(f"Error reading heads: {e}")
+            return None
 
 
 class FlopyLayer(IMapLayer):
