@@ -56,6 +56,10 @@ parameters:
     icelltype: [0, 0, 0, 0, 0, 0, 0]
   rch:
     rech: 0.00019
+  evt:
+    surface: !join [ *rasters, dem, dem_srtm.tif ]
+    rate: 0.00005
+    depth: 2.5
   ic:
     strt: 300
 sources:

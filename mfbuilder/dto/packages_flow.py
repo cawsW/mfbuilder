@@ -87,8 +87,30 @@ class IcConfig(BaseModel):
                 heads.append(RasterHandler(ic).resample_to_grid(grid))
         return heads
 
+
+class EvtConfig(BaseModel):
+    surface: float | Path = 0.0
+    rate: float | Path = 0.001
+    depth: float | Path = 1.0
+    ievt: int | Path | None = None
+
+    def _load_value(self, value, grid, dtype=float):
+        if isinstance(value, (int, float)):
+            return dtype(value)
+        return RasterHandler(value).resample_to_grid(grid)
+
+    def load_arrays(self, grid):
+        surface = self._load_value(self.surface, grid, float)
+        rate = self._load_value(self.rate, grid, float)
+        depth = self._load_value(self.depth, grid, float)
+        ievt = None
+        if self.ievt is not None:
+            ievt = self._load_value(self.ievt, grid, int)
+        return surface, rate, depth, ievt
+
 class FlowPackagesConfig(BaseModel):
     """Группировка всех 'flow' пакетов."""
     npf: NpfConfig | None = None
     rch: dict[int, RchConfig] | RchConfig | None = None
     ic: IcConfig | None = None
+    evt: dict[int, EvtConfig] | EvtConfig | None = None

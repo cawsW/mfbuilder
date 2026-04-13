@@ -14,6 +14,7 @@ import matplotlib.patheffects as pe
 from matplotlib.colors import LogNorm, Normalize, BoundaryNorm
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
+from pyproj import CRS, Transformer
 
 from mfbuilder.maps.protocols import IMapLayer
 from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig, AnnotationLayerConfig
@@ -50,7 +51,7 @@ class BasemapLayer(IMapLayer):
                     zorder=self.config.zorder,
                     attribution=''
                 )
-                custom_text = 'EPSG:28412'
+                custom_text = 'EPSG:28415'
                 ax.text(
                     0.98,
                     0.02,
@@ -272,7 +273,7 @@ class VectorLayer(IMapLayer):
                 ls='',
                 markerfacecolor=color,
                 markeredgecolor=style.edgecolor or 'white',
-                markersize=(style.markersize or 5) * 0.3,
+                markersize=(style.markersize or 5) * 0.2,
                 alpha=style.alpha,
                 label=label
             )]
@@ -536,6 +537,8 @@ class FlopyCrossSection:
                 print(f"Warning: contour_array failed: {e}")
 
         self._label_section_ends(ax)
+        self._plot_surface_raster(ax)
+        self._apply_section_ylim(ax)
 
     def _load_line_coords(self) -> Optional[List[Tuple[float, float]]]:
         if self._line_coords is not None:
@@ -590,6 +593,113 @@ class FlopyCrossSection:
             transform=ax.get_xaxis_transform(),
             ha='right', va='bottom'
         )
+
+    def _plot_surface_raster(self, ax: plt.Axes) -> None:
+        path = getattr(self.config, "surface_raster_path", None)
+        if not path:
+            return
+        line = self._load_line_coords()
+        if not line:
+            return
+        step = float(getattr(self.config, "surface_sample_step", 50.0))
+        if step <= 0:
+            step = 50.0
+        pts, dists = self._densify_line_with_distances(line, step)
+        if not pts:
+            return
+        try:
+            with rasterio.open(path) as src:
+                sample_pts = pts
+                if self.global_crs and src.crs and str(src.crs) != str(self.global_crs):
+                    try:
+                        transformer = Transformer.from_crs(
+                            CRS.from_user_input(self.global_crs),
+                            CRS.from_user_input(src.crs),
+                            always_xy=True
+                        )
+                        xs, ys = zip(*pts)
+                        xs_t, ys_t = transformer.transform(xs, ys)
+                        sample_pts = list(zip(xs_t, ys_t))
+                    except Exception as e:
+                        print(f"Warning: Surface raster CRS differs; reprojection failed: {e}")
+                vals = list(src.sample(sample_pts))
+                vals = np.array(vals, dtype=float).reshape(-1)
+                if src.nodata is not None:
+                    vals = np.where(np.isclose(vals, src.nodata), np.nan, vals)
+        except Exception as e:
+            print(f"Error reading surface raster {path}: {e}")
+            return
+
+        mask = np.isfinite(vals)
+        if not np.any(mask):
+            return
+
+        ax.plot(
+            np.array(dists)[mask],
+            vals[mask],
+            color=getattr(self.config, "surface_color", "black"),
+            linewidth=getattr(self.config, "surface_linewidth", 1.0),
+            label=getattr(self.config, "surface_label", None),
+            zorder=getattr(self.config, "surface_zorder", 5)
+        )
+
+    def _apply_section_ylim(self, ax: plt.Axes) -> None:
+        if not getattr(self.config, "section_autolimit", True):
+            return
+        y_min, y_max = self._get_model_elevation_limits()
+        if y_min is None or y_max is None:
+            ax.relim()
+            ax.autoscale_view()
+            y_min, y_max = ax.dataLim.intervaly
+        if not np.isfinite(y_min) or not np.isfinite(y_max):
+            return
+        if y_min == y_max:
+            return
+        pad_frac = getattr(self.config, "section_ylim_padding", 0.02)
+        pad = (y_max - y_min) * pad_frac
+        ax.set_ylim(y_min - pad, y_max + pad)
+
+    def _get_model_elevation_limits(self):
+        if self.model is None or not hasattr(self.model, "modelgrid"):
+            return None, None
+        grid = self.model.modelgrid
+        try:
+            top = np.asarray(grid.top, dtype=float)
+            botm = np.asarray(grid.botm, dtype=float)
+        except Exception:
+            return None, None
+        top_vals = top[np.isfinite(top)]
+        botm_vals = botm[np.isfinite(botm)]
+        if top_vals.size == 0 or botm_vals.size == 0:
+            return None, None
+        return float(np.min(botm_vals)), float(np.max(top_vals))
+
+    @staticmethod
+    def _densify_line_with_distances(line: List[Tuple[float, float]], step: float):
+        if len(line) < 2:
+            return [], []
+        points = []
+        dists = []
+        total = 0.0
+        for i in range(len(line) - 1):
+            x0, y0 = line[i]
+            x1, y1 = line[i + 1]
+            seg_len = float(np.hypot(x1 - x0, y1 - y0))
+            if seg_len == 0:
+                continue
+            n = max(1, int(seg_len / step))
+            for j in range(n):
+                t = j / n
+                x = x0 + (x1 - x0) * t
+                y = y0 + (y1 - y0) * t
+                if points and x == points[-1][0] and y == points[-1][1]:
+                    continue
+                points.append((x, y))
+                dists.append(total + seg_len * t)
+            total += seg_len
+        points.append(line[-1])
+        dists.append(total)
+        return points, dists
 
     def _get_model_elevation_limits(self):
         if self.model is None or not hasattr(self.model, "modelgrid"):
@@ -732,14 +842,6 @@ class FlopyCrossSection:
         return None
 
     def _get_heads_data(self):
-        try:
-            if hasattr(self.model, 'output') and hasattr(self.model.output, 'head'):
-                head_obj = self.model.output.head()
-                if head_obj is not None:
-                    return head_obj.get_data(kstpkper=(0, self.config.stress_period))
-        except Exception:
-            pass
-
         model_name = self.config.model_nam or getattr(self.model, 'name', None)
         if not model_name:
             return None
@@ -749,6 +851,12 @@ class FlopyCrossSection:
             return head.get_data(kstpkper=(0, self.config.stress_period))
         except Exception as e:
             print(f"Error reading heads: {e}")
+        try:
+            if hasattr(self.model, 'output') and hasattr(self.model.output, 'head'):
+                head_obj = self.model.output.head()
+                if head_obj is not None:
+                    return head_obj.get_data(kstpkper=(0, self.config.stress_period))
+        except Exception:
             return None
 
 
@@ -958,7 +1066,7 @@ class FlopyLayer(IMapLayer):
     def _get_array_data(self):
         """Верхнеуровневый метод извлечения данных."""
         param_name = self.config.parameter.lower()
-
+        print(param_name)
         if ':' in param_name:
             return self._extract_package_data(param_name)
 
@@ -1022,7 +1130,8 @@ class FlopyLayer(IMapLayer):
 
         if param_name in ['k', 'hk', 'k11'] and hasattr(self.model, 'npf'):
             return self.model.npf.k.array[layer_idx]
-
+        if param_name in ['k2', 'hk22', 'k22'] and hasattr(self.model, 'npf'):
+            return self.model.npf.k22.array[layer_idx]
         if param_name in ['rch', 'recharge'] and hasattr(self.model, 'rch'):
             return self._get_recharge_data(stress_period)
 

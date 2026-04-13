@@ -130,6 +130,12 @@ class CrossSectionConfig(BaseModel):
     line_color: str = "red"
     line_width: float = 1.5
     line_label_offset_points: int = 6
+    surface_raster_path: Optional[str] = None
+    surface_color: str = "black"
+    surface_linewidth: float = 1.0
+    surface_label: Optional[str] = None
+    surface_sample_step: float = 50.0
+    surface_zorder: int = 5
     parameter: Literal['head', 'k1', 'k2', 'k3'] = 'head'
     stress_period: int = 0
     style: StyleConfig = Field(default_factory=StyleConfig)

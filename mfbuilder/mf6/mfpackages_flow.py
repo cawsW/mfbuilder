@@ -1,11 +1,11 @@
 import numpy as np
-from flopy.mf6 import ModflowGwfnpf, ModflowGwfrcha,ModflowGwfrch, ModflowGwfic
+from flopy.mf6 import ModflowGwfnpf, ModflowGwfrcha, ModflowGwfrch, ModflowGwfic, ModflowGwfevta
 from flopy.mf6.modflow import ModflowUtltvk
 from mfbuilder.dto.base import ProjectConfig
 
 
 class MF6FlowPackageBuilder:
-    """Создаёт гидрогеологические пакеты (NPF, RCHA, IC) для MODFLOW 6."""
+    """Создаёт гидрогеологические пакеты (NPF, RCHA, EVT, IC) для MODFLOW 6."""
 
     def __init__(self, model, grid, cfg: ProjectConfig):
         self.model = model
@@ -20,20 +20,22 @@ class MF6FlowPackageBuilder:
             self._build_ic()
         if self.cfg.rch:
             self._build_rch()
+        if self.cfg.evt:
+            self._build_evt()
 
     def _build_npf(self):
         hk, k22, k33, anglx, angly, anglz = self.cfg.npf.load_arrays(self.grid)
-        idomain_lay1 = self.grid.idomain[0]
-        target_indices = np.where(idomain_lay1 == 1)[0]
-        spd_layer1 = []
-        for cell_idx in target_indices:
-            spd_layer1.append([(0, cell_idx), 'k', 1.0])
-            spd_layer1.append([(0, cell_idx), 'k22', 1.0])
-            spd_layer1.append([(0, cell_idx), 'k33', 0.1])
-
-        tvk_perioddata = {
-            1: spd_layer1
-        }
+        # idomain_lay1 = self.grid.idomain[0]
+        # target_indices = np.where(idomain_lay1 == 1)[0]
+        # spd_layer1 = []
+        # for cell_idx in target_indices:
+        #     spd_layer1.append([(0, cell_idx), 'k', 1.0])
+        #     spd_layer1.append([(0, cell_idx), 'k22', 1.0])
+        #     spd_layer1.append([(0, cell_idx), 'k33', 0.1])
+        #
+        # tvk_perioddata = {
+        #     1: spd_layer1
+        # }
         npf = ModflowGwfnpf(
             self.model,
             icelltype=self.cfg.npf.icelltype,
@@ -44,10 +46,10 @@ class MF6FlowPackageBuilder:
             angle2=angly,
             angle3=anglz,
         )
-        tvk = ModflowUtltvk(
-            npf,
-            perioddata=tvk_perioddata
-        )
+        # tvk = ModflowUtltvk(
+        #     npf,
+        #     perioddata=tvk_perioddata
+        # )
 
 
     def _build_ic(self):
@@ -62,13 +64,44 @@ class MF6FlowPackageBuilder:
         else:
             rch_spd = {0: rch_cfg.load_array(self.grid)}
         irch_array = np.ones(self.grid.ncpl, dtype=int)
-        idomain_lay1 = self.grid.idomain[0]
-        idx_inactive = (idomain_lay1 < 1)
-        irch_array2 = np.zeros(self.grid.ncpl, dtype=int)
-        irch_array2[idx_inactive] = 1
+        # idomain_lay1 = self.grid.idomain[0]
+        # idx_inactive = (idomain_lay1 < 1)
+        # irch_array2 = np.zeros(self.grid.ncpl, dtype=int)
+        # irch_array2[idx_inactive] = 1
+        #
+        # irch = {0: irch_array, 1: irch_array2}
 
-        irch = {0: irch_array, 1: irch_array2}
-
-        ModflowGwfrcha(self.model, readasarrays=True, recharge=rch_spd, irch=irch)
+        ModflowGwfrcha(self.model, readasarrays=True, recharge=rch_spd) #, irch=irch)
         # ModflowGwfrcha(self.model, readasarrays=True, recharge=rch_spd)
         # ModflowGwfrch(self.model, stress_period_data=rch_spd)
+
+    def _build_evt(self):
+        evt_cfg = self.cfg.evt
+
+        if isinstance(evt_cfg, dict):
+            surface_spd = {}
+            rate_spd = {}
+            depth_spd = {}
+            ievt_spd = {}
+            for per, cfg in evt_cfg.items():
+                surface, rate, depth, ievt = cfg.load_arrays(self.grid)
+                surface_spd[int(per)] = surface
+                rate_spd[int(per)] = rate
+                depth_spd[int(per)] = depth
+                if ievt is not None:
+                    ievt_spd[int(per)] = ievt
+        else:
+            surface, rate, depth, ievt = evt_cfg.load_arrays(self.grid)
+            surface_spd = {0: surface}
+            rate_spd = {0: rate}
+            depth_spd = {0: depth}
+            ievt_spd = {0: ievt} if ievt is not None else {}
+
+        ModflowGwfevta(
+            self.model,
+            readasarrays=True,
+            surface=surface_spd,
+            rate=rate_spd,
+            depth=depth_spd,
+            ievt=ievt_spd if ievt_spd else None,
+        )

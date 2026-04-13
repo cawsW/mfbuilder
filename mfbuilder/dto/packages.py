@@ -15,6 +15,8 @@ class SourceSinksFeature(BaseModel):
     boundname: str | None = Field(default=None, description="Один boundname на весь объект")
     boundname_field: str | None = Field(default=None, description="Имя поля в GeoDataFrame для boundname")
     boundname_prefix: str | None = Field(default=None, description="Префикс для автонумерации boundname")
+    # Фильтрация геометрии по атрибутам
+    filter: str | None = Field(default=None, description="Условие фильтрации строк GeoDataFrame (pandas query)")
 
     @classmethod
     def load_geometry(cls, geom):
@@ -37,7 +39,19 @@ class SourceSinksFeature(BaseModel):
             return geom
         raise TypeError(f"Некорректный тип geometry: {type(geom)}")
 
-        # 👇 добавляем метод сюда
+    def get_filtered_geometry(self):
+        """Загружает геометрию и применяет фильтр (если задан)."""
+        import geopandas as gpd
+
+        result = self.load_geometry(self.geometry)
+        if self.filter is None or not isinstance(result, gpd.GeoDataFrame):
+            return result
+        filtered = result.query(self.filter).reset_index(drop=True)
+        if filtered.empty:
+            raise ValueError(
+                f"После применения фильтра '{self.filter}' не осталось объектов в геометрии."
+            )
+        return filtered
 
     def resolve_layers(self, geom_gdf, geom_index: int) -> list[int]:
         """Возвращает список слоёв для текущей фичи и геометрии."""

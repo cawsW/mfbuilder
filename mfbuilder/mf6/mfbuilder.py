@@ -30,7 +30,8 @@ class MF6Builder:
             # outer_dvclose=1e-4,
             # inner_dvclose=1e-5,
             # rcloserecord=[0.1, "L2NORM_RCLOSE"],
-            # outer_maximum = 500
+            outer_maximum=300,
+            inner_maximum=100,
         )
 
     def create_sim(self) -> ModflowGwf:

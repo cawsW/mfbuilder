@@ -79,8 +79,8 @@ class Director:
             builder.run()
         # observations.compare_results()
 
-        flopy.export.shapefile_utils.model_attributes_to_shapefile(os.path.join("..", "output", "vectors", "grid.shp"),
-                                                                   ml=model)
+        # flopy.export.shapefile_utils.model_attributes_to_shapefile(os.path.join("..", "output", "vectors", "grid.shp"),
+        #                                                            ml=model)
         return model
 
     def load(self):

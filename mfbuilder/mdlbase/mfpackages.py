@@ -42,7 +42,7 @@ class BaseSourceSinksHandler(Generic[TGrid]):
             cellmap = {}
 
             for f in feature.data:
-                geom_gdf = f.load_geometry(f.geometry)
+                geom_gdf = f.get_filtered_geometry()
                 resolver_cache = FieldResolverCache(f, self.grid, geom_gdf)
 
                 for geom_index, geom in enumerate(geom_gdf.geometry):
