@@ -108,9 +108,44 @@ class EvtConfig(BaseModel):
             ievt = self._load_value(self.ievt, grid, int)
         return surface, rate, depth, ievt
 
+class StoConfig(BaseModel):
+    """Параметры пакета STO (хранение, нестационар)."""
+    ss: list[float | Path]
+    sy: list[float | Path]
+    iconvert: int | list[int] = Field(default=0, description="0 — confined, 1 — convertible (на весь слой или список)")
+
+    def load_arrays(self, grid):
+        """Загружает ss и sy как 3D numpy-массивы."""
+
+        def _load_list(values):
+            arrays = []
+            for val in values:
+                if isinstance(val, (int, float)):
+                    arr = np.full(grid.shape[1:], float(val))
+                else:
+                    arr = RasterHandler(val).resample_to_grid(grid)
+                arrays.append(arr)
+            return np.array(arrays)
+
+        ss_arr = _load_list(self.ss)
+        sy_arr = _load_list(self.sy)
+
+        nlay = grid.nlay
+        if isinstance(self.iconvert, int):
+            iconvert_arr = np.full((nlay, *grid.shape[1:]), self.iconvert, dtype=int)
+        else:
+            iconvert_arr = np.array([
+                np.full(grid.shape[1:], v, dtype=int)
+                for v in self.iconvert
+            ])
+
+        return ss_arr, sy_arr, iconvert_arr
+
+
 class FlowPackagesConfig(BaseModel):
     """Группировка всех 'flow' пакетов."""
     npf: NpfConfig | None = None
     rch: dict[int, RchConfig] | RchConfig | None = None
     ic: IcConfig | None = None
     evt: dict[int, EvtConfig] | EvtConfig | None = None
+    sto: StoConfig | None = None

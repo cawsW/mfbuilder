@@ -1,16 +1,17 @@
 import numpy as np
-from flopy.mf6 import ModflowGwfnpf, ModflowGwfrcha, ModflowGwfrch, ModflowGwfic, ModflowGwfevta
+from flopy.mf6 import ModflowGwfnpf, ModflowGwfrcha, ModflowGwfrch, ModflowGwfic, ModflowGwfevta, ModflowGwfsto
 from flopy.mf6.modflow import ModflowUtltvk
 from mfbuilder.dto.base import ProjectConfig
 
 
 class MF6FlowPackageBuilder:
-    """Создаёт гидрогеологические пакеты (NPF, RCHA, EVT, IC) для MODFLOW 6."""
+    """Создаёт гидрогеологические пакеты (NPF, RCHA, EVT, IC, STO) для MODFLOW 6."""
 
     def __init__(self, model, grid, cfg: ProjectConfig):
         self.model = model
         self.grid = grid
         self.cfg = cfg.parameters  # FlowPackagesConfig
+        self.tdis = cfg.tdis
 
     def build(self):
         """Основной метод — создаёт пакеты в зависимости от конфигурации."""
@@ -22,6 +23,8 @@ class MF6FlowPackageBuilder:
             self._build_rch()
         if self.cfg.evt:
             self._build_evt()
+        if self.cfg.sto:
+            self._build_sto()
 
     def _build_npf(self):
         hk, k22, k33, anglx, angly, anglz = self.cfg.npf.load_arrays(self.grid)
@@ -104,4 +107,23 @@ class MF6FlowPackageBuilder:
             rate=rate_spd,
             depth=depth_spd,
             ievt=ievt_spd if ievt_spd else None,
+        )
+
+    def _build_sto(self):
+        ss, sy, iconvert = self.cfg.sto.load_arrays(self.grid)
+
+        steady_list = self.tdis.steady
+        if isinstance(steady_list, bool):
+            steady_list = [steady_list]
+
+        steady_state = {i: True for i, s in enumerate(steady_list) if s}
+        transient = {i: True for i, s in enumerate(steady_list) if not s}
+
+        ModflowGwfsto(
+            self.model,
+            iconvert=iconvert,
+            ss=ss,
+            sy=sy,
+            steady_state=steady_state if steady_state else None,
+            transient=transient if transient else None,
         )
