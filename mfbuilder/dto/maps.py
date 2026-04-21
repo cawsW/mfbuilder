@@ -115,7 +115,41 @@ class FlopyLayerConfig(BaseLayerConfig):
     contours: bool = False
     contour_style: ContourStyleConfig = Field(default_factory=ContourStyleConfig)
 
-LayerConfigUnion = Union[BasemapConfig, VectorLayerConfig, AnnotationLayerConfig, RasterLayerConfig, FlopyLayerConfig]
+
+class PestLayerConfig(BaseLayerConfig):
+    type: Literal['pest']
+
+    model_ws: str  # Путь к папке симуляции
+    ensemble_file: str  # Путь к папке симуляции
+    tpl_file: str  # Путь к папке симуляции
+    fac_file: str  # Путь к папке симуляции
+    pst: str
+    model_nam: Optional[str] = None  # Имя модели (если в симуляции их несколько)
+
+    layer: int = 0  # Индекс слоя (0 - верхний)
+    stress_period: int = 0  # Стресс-период (для RCH/WEL)
+    parameter: Optional[str] = None  # Что рисуем: 'k', 'k33', 'rch', 'top', 'botm'
+
+    # Настройки отображения данных (массива)
+    style: StyleConfig = Field(default_factory=StyleConfig)
+    log_scale: bool = False  # Логарифмическая шкала (для фильтрации)
+    masked_values: List[float] = [0, 1e30, -1e30, -999.99, 999.0, -999.00, 999.99]  # Значения, считающиеся "нет данных"
+
+    # Настройки сетки
+    grid_enabled: bool = False
+    grid_color: str = "gray"
+    grid_linewidth: float = 0.3
+
+    # Граничные условия (Boundary Conditions)
+    # Список типов для отрисовки, например ['riv', 'drn', 'chd']
+    bc_enabled: List[str] = []
+    # Словарь цветов: {'riv': 'blue', 'drn': 'green'}
+    bc_colors: Dict[str, str] = Field(default_factory=lambda: {'riv': 'cyan', 'drn': 'green', 'wel': 'red'})
+    colorbar: ColorbarConfig = Field(default_factory=ColorbarConfig)
+    contours: bool = False
+    contour_style: ContourStyleConfig = Field(default_factory=ContourStyleConfig)
+
+LayerConfigUnion = Union[BasemapConfig, VectorLayerConfig, AnnotationLayerConfig, RasterLayerConfig, FlopyLayerConfig, PestLayerConfig]
 LayerConfig = Annotated[LayerConfigUnion, Field(discriminator='type')]
 
 class CrossSectionConfig(BaseModel):

@@ -1,6 +1,6 @@
 from typing import Optional
 from mfbuilder.maps.protocols import IMapLayer
-from mfbuilder.maps.layers import VectorLayer, RasterLayer, BasemapLayer, FlopyLayer, AnnotationLayer
+from mfbuilder.maps.layers import VectorLayer, RasterLayer, BasemapLayer, FlopyLayer, AnnotationLayer, PestLayer
 from mfbuilder.dto.maps import LayerConfig
 
 class LayerFactory:
@@ -14,6 +14,8 @@ class LayerFactory:
             return BasemapLayer(layer_conf, global_crs)
         elif layer_conf.type == 'flopy':
             return FlopyLayer(layer_conf, global_crs)
+        elif layer_conf.type == 'pest':
+            return PestLayer(layer_conf, global_crs)
         elif layer_conf.type == 'annotation':
             return AnnotationLayer(layer_conf, global_crs)
         else:

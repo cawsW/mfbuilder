@@ -2,10 +2,12 @@ import os
 from typing import Any, List, Optional, Dict, Tuple
 
 import numpy as np
+import pandas as pd
 import geopandas as gpd
 import rasterio
 import contextily as ctx
 import flopy
+import pyemu
 from rasterio.mask import mask
 from rasterio.plot import plotting_extent
 import matplotlib.pyplot as plt
@@ -17,7 +19,7 @@ from matplotlib.lines import Line2D
 from pyproj import CRS, Transformer
 
 from mfbuilder.maps.protocols import IMapLayer
-from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig, AnnotationLayerConfig
+from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig, AnnotationLayerConfig, PestLayerConfig
 
 
 class BasemapLayer(IMapLayer):
@@ -51,7 +53,7 @@ class BasemapLayer(IMapLayer):
                     zorder=self.config.zorder,
                     attribution=''
                 )
-                custom_text = 'EPSG:28415'
+                custom_text = 'EPSG:28412'
                 ax.text(
                     0.98,
                     0.02,
@@ -84,7 +86,6 @@ class VectorLayer(IMapLayer):
         try:
             self._legend_items = []
             gdf = self._load_and_process_data()
-
             if gdf is None or gdf.empty:
                 return
             if not gdf.empty and self._detected_geom_type is None:
@@ -513,7 +514,18 @@ class FlopyCrossSection:
             masked_values=self.config.masked_values
         )
         head = self._get_heads_data()
-        wt = pmv.plot_surface(head, color="blue", lw=2.5)
+        # wt = pmv.plot_surface(head, color="blue", lw=2.5)
+        nlay = self.model.modelgrid.nlay
+        colors = plt.cm.jet(np.linspace(0, 1, nlay))
+        for i in range(nlay):
+            pmv.plot_surface(
+                head[i],
+                color=colors[i],
+                lw=2.5,
+                label=f"Поверхность подземных вод {i + 1} слоя"
+            )
+
+        plt.legend()
         pmv.plot_grid(color=self.config.grid_color, linewidth=self.config.grid_linewidth)
         # plt.colorbar(pa, shrink=0.75)
 
@@ -1163,3 +1175,52 @@ class FlopyLayer(IMapLayer):
                 color = self.config.bc_colors.get(bc, 'blue')
                 handles.append(Patch(facecolor=color, label=self.config.label if self.config.label else bc.upper()))
         return handles
+
+
+class PestLayer(FlopyLayer):
+    # TODO: Нужно сделать базовый класс с общими методами для PestLayer, FlopyLayer
+    def __init__(self, config: PestLayerConfig, global_crs: Optional[str] = None):
+        super().__init__(config, global_crs)
+        self.config: PestLayerConfig = config
+        self.model = self._load_model()
+
+    def get_tpl_map(self, tpl_path):
+        with open(tpl_path, 'r') as f:
+            header = f.readline()
+            marker = header.strip().split()[1]
+
+            mapping = []
+            for line in f:
+                if marker in line:
+                    parts = line.split()
+                    pp_name = parts[0]
+                    pest_name = line.split(marker)[1].strip()
+                    mapping.append({"pp_name": pp_name, "pest_name": pest_name})
+        return pd.DataFrame(mapping)
+
+    def get_vgrid_std(self):
+        ws = self.config.model_ws
+        mapping_df = self.get_tpl_map(os.path.join(ws, self.config.tpl_file))
+        pe = pyemu.ParameterEnsemble.from_csv(pst=pyemu.Pst(os.path.join(ws, self.config.pst)),
+                                              filename=os.path.join(ws, self.config.ensemble_file))
+        param_std = pe.std(axis=0).to_frame(name="std")
+
+        merged_map = mapping_df.merge(param_std, left_on="pest_name", right_index=True)
+
+        pp_df = pyemu.pp_utils.pp_tpl_to_dataframe(os.path.join(ws, self.config.tpl_file))
+        pp_df = pp_df.merge(merged_map[['pp_name', 'std']], left_on="name", right_on="pp_name")
+
+        pp_df.loc[:, "parval1"] = pp_df["std"]
+
+        return pyemu.geostats.fac2real(pp_df,
+                                       factors_file=os.path.join(ws, self.config.fac_file),
+                                       out_file=None
+                                       ).flatten()
+
+    def _extract_property_array(self, param_name: str):
+        """Извлекает данные из полных массивов (K, Recharge и т.д.)."""
+
+        if param_name == "std_npf":
+            return self.get_vgrid_std()
+
+        return None
