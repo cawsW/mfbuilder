@@ -56,7 +56,9 @@ class MF6FlowPackageBuilder:
 
 
     def _build_ic(self):
-        strt = self.cfg.ic.load_array(self.grid)
+        # MODFLOW 6 IC is applied once before the first stress period.
+        # When strt is per-period, period 0 (SS) is used for the IC array.
+        strt = self.cfg.ic.load_array(self.grid, period=0)
         ModflowGwfic(self.model, strt=strt)
 
     def _build_rch(self):

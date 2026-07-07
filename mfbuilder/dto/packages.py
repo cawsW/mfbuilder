@@ -78,7 +78,7 @@ class SourceSinksFeature(BaseModel):
 
 class RivFeature(SourceSinksFeature):
     stage: float | Path | str
-    cond: float
+    cond: float | str
     depth: float | str | None = None  # может быть выражением типа "stage - 3"
 
     def postprocess(self, values: dict[str, float]) -> dict[str, float]:
@@ -94,16 +94,24 @@ class GhbFeature(SourceSinksFeature):
 
 class DrnFeature(SourceSinksFeature):
     head: float | Path | str
-    cond: float
+    cond: float | str
 
 
 class WelFeature(SourceSinksFeature):
     rate: float | str  # может быть числом или именем поля (например, "rate")
 
 
+class LakFeature(SourceSinksFeature):
+    """Озеро/пруд (полигон), задаётся пакетом LAK."""
+    head: float | Path | str  # начальный уровень озера (strt)
+    cond: float | str  # проводимость ложа озера (bedleak)
+    runoff: float | str = 0.0  # поверхностный приток в озеро
+    evaporation: float | str = 0.0  # испарение с зеркала озера
+
+
 class SourceSinksZone(BaseModel):
     """Одна зона источников (например, riv.0 или wel.0)."""
-    data: list[RivFeature | WelFeature | DrnFeature | GhbFeature]  # или Union позже
+    data: list[RivFeature | WelFeature | DrnFeature | GhbFeature | LakFeature]  # или Union позже
 
 
 class SourcePackageConfig(BaseModel):

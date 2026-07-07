@@ -45,12 +45,15 @@ class RasterHandler:
 
     @staticmethod
     def expand_arrays(adjusted: np.ndarray, expand_val: float) -> np.ndarray:
-        tops = adjusted[:-1]
-        bottoms = adjusted[1:]
-        diff = tops - bottoms
-        too_thin = diff < expand_val
-        bottoms[too_thin] = tops[too_thin] - expand_val
-        adjusted[1:] = bottoms
+        # Process layers sequentially top→bottom so that pushing a surface down
+        # is visible when checking the next interface (all-at-once fails when
+        # multiple consecutive layers share the same elevation).
+        for i in range(len(adjusted) - 1):
+            adjusted[i + 1] = np.where(
+                adjusted[i] - adjusted[i + 1] < expand_val,
+                adjusted[i] - expand_val,
+                adjusted[i + 1],
+            )
         return adjusted
 
 
@@ -73,7 +76,7 @@ class FieldResolver:
         self.geom_gdf = geom_gdf
         self._cached_array = None
 
-    def get_value(self, icell, context=None):
+    def get_value(self, icell, geom_index=0, context=None):
         """Получает значение для одной ячейки сетки."""
         # 🔹 Просто число
         if isinstance(self.value, (int, float)):
@@ -81,7 +84,7 @@ class FieldResolver:
 
         # 🔹 Поле в GeoDataFrame
         if isinstance(self.value, str) and self.value in self.geom_gdf.columns:
-            return float(self.geom_gdf[self.value].iloc[0])
+            return float(self.geom_gdf[self.value].iloc[geom_index])
 
         # 🔹 Растр (tif, asc)
         from pathlib import Path
@@ -126,11 +129,11 @@ class FieldResolverCache:
             cache[name] = FieldResolver(val, self.grid, self.geom_gdf)
         return cache
 
-    def resolve_all(self, icell) -> dict[str, float]:
+    def resolve_all(self, icell, geom_index=0) -> dict[str, float]:
         """Возвращает вычисленные значения всех полей для одной ячейки."""
         result = {}
         for name, resolver in self._cache.items():
-            result[name] = resolver.get_value(icell, context=result)
+            result[name] = resolver.get_value(icell, geom_index=geom_index, context=result)
         # вызов postprocess(), если определён в модели
         if hasattr(self.feature, "postprocess"):
             result = self.feature.postprocess(result)

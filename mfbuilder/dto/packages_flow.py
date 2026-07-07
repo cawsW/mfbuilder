@@ -76,11 +76,17 @@ class RchConfig(BaseModel):
 
 
 class IcConfig(BaseModel):
-    strt: list[float | Path] = 0.0
+    strt: dict[int, list[float | Path]] | list[float | Path] = 0.0
 
-    def load_array(self, grid):
+    def load_array(self, grid, period: int = 0):
+        strt = self.strt
+        if isinstance(strt, dict):
+            available = sorted(strt.keys())
+            # nearest lower period; if none, use the first defined
+            selected = next((p for p in reversed(available) if p <= period), available[0])
+            strt = strt[selected]
         heads = []
-        for ic in self.strt:
+        for ic in strt:
             if isinstance(ic, (int, float)):
                 heads.append(np.full(grid.shape[1:], float(ic)))
             else:

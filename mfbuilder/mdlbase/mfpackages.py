@@ -52,7 +52,7 @@ class BaseSourceSinksHandler(Generic[TGrid]):
 
                     for layer in layers:
                         for icell in cells:
-                            record = build_record_fn(layer, icell, resolver_cache, bname)
+                            record = build_record_fn(layer, icell, resolver_cache, bname, geom_index)
                             key = (layer, icell)
                             cellmap[key] = record  # перезапишет, если уже был
 

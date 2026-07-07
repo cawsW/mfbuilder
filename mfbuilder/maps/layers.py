@@ -17,6 +17,7 @@ from matplotlib.colors import LogNorm, Normalize, BoundaryNorm
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
 from pyproj import CRS, Transformer
+from scipy.interpolate import interp1d
 
 from mfbuilder.maps.protocols import IMapLayer
 from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig, AnnotationLayerConfig, PestLayerConfig
@@ -487,6 +488,7 @@ class FlopyCrossSection:
         self.global_crs = global_crs
         self.model = self._load_model()
         self._line_coords: Optional[List[Tuple[float, float]]] = None
+        self.legend_handles: List[Any] = []
 
     def draw(self, ax: plt.Axes) -> None:
         if not self.model:
@@ -514,18 +516,9 @@ class FlopyCrossSection:
             masked_values=self.config.masked_values
         )
         head = self._get_heads_data()
-        # wt = pmv.plot_surface(head, color="blue", lw=2.5)
         nlay = self.model.modelgrid.nlay
-        colors = plt.cm.jet(np.linspace(0, 1, nlay))
-        for i in range(nlay):
-            pmv.plot_surface(
-                head[i],
-                color=colors[i],
-                lw=2.5,
-                label=f"Поверхность подземных вод {i + 1} слоя"
-            )
-
-        plt.legend()
+        colors = plt.cm.Spectral(np.linspace(0, 1, nlay))
+        self._plot_head_surfaces_smooth(pmv, head, ax, nlay, colors)
         pmv.plot_grid(color=self.config.grid_color, linewidth=self.config.grid_linewidth)
         # plt.colorbar(pa, shrink=0.75)
 
@@ -551,6 +544,80 @@ class FlopyCrossSection:
         self._label_section_ends(ax)
         self._plot_surface_raster(ax)
         self._apply_section_ylim(ax)
+
+    def _plot_head_surfaces_smooth(self, pmv, head, ax, nlay, colors):
+        self.legend_handles = []
+        for i in range(nlay):
+            label = f"Поверхность подземных вод {i + 1} слоя"
+            color = colors[i]
+
+            # Запоминаем количество artist'ов ДО вызова plot_surface
+            n_lines_before = len(ax.lines)
+            n_colls_before = len(ax.collections)
+
+            pmv.plot_surface(head[i], color=color, lw=0.1)
+
+            # Забираем всё что добавил flopy
+            new_lines = list(ax.lines[n_lines_before:])
+            new_colls = list(ax.collections[n_colls_before:])
+
+            xs, ys = [], []
+
+            for line in new_lines:
+                try:
+                    xd = np.asarray(line.get_xdata(), dtype=float)
+                    yd = np.asarray(line.get_ydata(), dtype=float)
+                    if len(xd) >= 2 and len(yd) >= 1:
+                        xs.append(float(np.mean(xd)))
+                        ys.append(float(yd[0]))
+                except Exception:
+                    pass
+
+            for coll in new_colls:
+                try:
+                    for seg in coll.get_segments():
+                        seg = np.asarray(seg, dtype=float)
+                        if seg.shape[0] >= 2:
+                            xs.append(float(np.mean(seg[:, 0])))
+                            ys.append(float(seg[0, 1]))
+                except Exception:
+                    pass
+
+            # Удаляем оригинальные ступенчатые artist'ы
+            for art in new_lines + new_colls:
+                try:
+                    art.remove()
+                except Exception:
+                    pass
+
+            if not xs:
+                continue
+
+            xs = np.array(xs)
+            ys = np.array(ys)
+            sort_idx = np.argsort(xs)
+            xs = xs[sort_idx]
+            ys = ys[sort_idx]
+
+            valid = ys < 1e20
+            xs = xs[valid]
+            ys = ys[valid]
+
+            if len(xs) < 2:
+                continue
+
+            if len(xs) >= 4:
+                x_new = np.linspace(xs[0], xs[-1], max(500, len(xs) * 5))
+                try:
+                    f = interp1d(xs, ys, kind='cubic')
+                    y_new = f(x_new)
+                except Exception:
+                    y_new = np.interp(x_new, xs, ys)
+                ax.plot(x_new, y_new, color=color, lw=1.5, label=label)
+            else:
+                ax.plot(xs, ys, color=color, lw=1.5, label=label)
+
+            self.legend_handles.append(Line2D([0], [0], color=color, lw=1.5, label=label))
 
     def _load_line_coords(self) -> Optional[List[Tuple[float, float]]]:
         if self._line_coords is not None:
@@ -1040,7 +1107,6 @@ class FlopyLayer(IMapLayer):
             cmap = plt.get_cmap(cmap_name, n_colors)
         else:
             cmap = plt.get_cmap(cmap_name)
-
         self.mappable = pmv.plot_array(
             data,
             masked_values=self.config.masked_values,

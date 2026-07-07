@@ -1,5 +1,6 @@
 import yaml
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.collections import Collection
@@ -28,6 +29,8 @@ class MapBuilder:
             use_inset=self.config.inset_map.enabled,
             use_section=self.config.cross_section.enabled
         )
+
+        self._section = None
 
         self.main_layers = []
         for layer_conf in self.config.main_map.layers:
@@ -82,11 +85,13 @@ class MapBuilder:
             for layer in self.inset_layers:
                 layer.draw(self.layout.ax_inset)
 
-        self._compile_legend()
-
         self._add_colorbars()
 
         self._draw_cross_section()
+
+        self._compile_legend()
+
+        self._format_axes()
 
         print(f"Saving map to {self.config.settings.output}...")
         self.layout.save(self.config.settings.output)
@@ -142,6 +147,14 @@ class MapBuilder:
                     handles.append(h)
                     labels.append(h.get_label())
 
+        # 3а. Добавляем хендлы поверхностей подземных вод из разреза
+        if self._section is not None:
+            for h in self._section.legend_handles:
+                lbl = h.get_label()
+                if lbl not in labels:
+                    handles.append(h)
+                    labels.append(lbl)
+
         # 4. Добавляем ручную легенду из конфига (ИСПРАВЛЕНИЕ ЗДЕСЬ)
         for item in self.config.legend:
             # Проверяем на дубликаты, если нужно (опционально)
@@ -181,12 +194,34 @@ class MapBuilder:
             for text in leg.get_texts():
                 text.set_ha('left')
 
+    def _format_axes(self):
+        base_size = self.config.settings.base_fontsize
+        axes_to_format = [self.layout.ax_main]
+        if self.layout.ax_inset:
+            axes_to_format.append(self.layout.ax_inset)
+
+        class MetricFormatter(mticker.ScalarFormatter):
+            def __init__(self):
+                super().__init__(useMathText=True)
+                self.set_scientific(True)
+                self.set_powerlimits((-3, 6))
+
+            def get_offset(self):
+                base = super().get_offset()
+                if base:
+                    return base + ', м'
+                return ''
+
+        for ax in axes_to_format:
+            for axis in [ax.xaxis, ax.yaxis]:
+                axis.set_major_formatter(MetricFormatter())
+
     def _draw_cross_section(self):
         if not self.config.cross_section.enabled:
             return
         if not self.layout.ax_section:
             return
-        section = FlopyCrossSection(self.config.cross_section, self.project_crs)
+        self._section = FlopyCrossSection(self.config.cross_section, self.project_crs)
         if self.layout.ax_main:
-            section.draw_line_on_map(self.layout.ax_main)
-        section.draw(self.layout.ax_section)
+            self._section.draw_line_on_map(self.layout.ax_main)
+        self._section.draw(self.layout.ax_section)

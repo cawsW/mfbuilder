@@ -13,7 +13,8 @@ from mfbuilder.dto.base import ProjectConfig
 from mfbuilder.mf6.mfbuilder import MF6Builder
 from mfbuilder.mf2005.mfbuilder import MF2005Builder
 from mfbuilder.mf6.mfpackages import (MF6VertexRivHandler, MF6StructuredRivHandler,
-                                      MF6VertexWelHandler, MF6VertexGhbHandler, MF6VertexDrnHandler)
+                                      MF6VertexWelHandler, MF6VertexGhbHandler, MF6VertexDrnHandler,
+                                      MF6VertexLakHandler)
 from mfbuilder.mf2005.mfpackages import MF2005StructuredRivHandler
 from mfbuilder.utils.mfdata import RasterHandler, VectorHandler
 
@@ -85,6 +86,7 @@ class SourceSinksFactory:
         ("ghb", EngineType.MF6, GridType.VERTEX): MF6VertexGhbHandler,
         ("drn", EngineType.MF6, GridType.VERTEX): MF6VertexDrnHandler,
         ("wel", EngineType.MF6, GridType.VERTEX): MF6VertexWelHandler,
+        ("lak", EngineType.MF6, GridType.VERTEX): MF6VertexLakHandler,
         ("riv", EngineType.MF6, GridType.STRUCTURED): MF6StructuredRivHandler,
         ("riv", EngineType.MF2005, GridType.STRUCTURED): MF2005StructuredRivHandler,
         }

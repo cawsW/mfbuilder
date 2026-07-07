@@ -26,7 +26,7 @@ class MF6Builder:
         ModflowIms(
             self.sim,
             complexity="SIMPLE",
-            # linear_acceleration="BICGSTAB",
+            linear_acceleration="BICGSTAB",
             # outer_dvclose=1e-4,
             # inner_dvclose=1e-5,
             # rcloserecord=[0.1, "L2NORM_RCLOSE"],
@@ -48,7 +48,7 @@ class MF6Builder:
             self.sim,
             modelname=cfg.name,
             save_flows=True,
-            # newtonoptions="UNDER_RELAXATION",
+            newtonoptions="UNDER_RELAXATION",
         )
         return self.model
 

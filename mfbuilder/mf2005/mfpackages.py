@@ -6,7 +6,7 @@ class MF2005StructuredRivHandler(StructuredGridMixin):
         records = self.iterate_features(self.build_record)
         return ModflowRiv(model, stress_period_data=records)
 
-    def build_record(self, layer, icell, cache):
+    def build_record(self, layer, icell, cache, bname=None, geom_index=0):
         icell = tuple(icell)
-        vals = cache.resolve_all(icell)
+        vals = cache.resolve_all(icell, geom_index)
         return [layer - 1, *icell, vals["stage"], vals["cond"], vals["elev"]]
