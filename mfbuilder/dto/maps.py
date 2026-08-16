@@ -29,6 +29,8 @@ class LabelConfig(BaseModel):
     halo_width: float = 2.0
     smart_placement: bool = True
     max_labels: int = 500
+    auto_placement: bool = False
+    position: str = 'center'
 
 
 class ColorbarConfig(BaseModel):
@@ -73,6 +75,7 @@ class AnnotationLayerConfig(BaseLayerConfig):
     text_column: str
     color: str = "black"
     rotation: Union[float, str] = 0.0
+    fontsize: int = 11
 
 
 class RasterLayerConfig(BaseLayerConfig):
@@ -176,6 +179,7 @@ class CrossSectionConfig(BaseModel):
     masked_values: List[float] = [0, 1e30, -1e30, -999.99, 999.0, -999.00, 999.99]
     grid_color: str = "gray"
     grid_linewidth: float = 0.3
+    layers: int | list | None = None
     contours: bool = False
     contour_style: ContourStyleConfig = Field(default_factory=ContourStyleConfig)
 

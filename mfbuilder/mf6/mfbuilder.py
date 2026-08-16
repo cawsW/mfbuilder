@@ -23,15 +23,31 @@ class MF6Builder:
         )
 
     def create_ims(self) -> None:
+        # COMPLEX (не SIMPLE) - нужен из-за нелинейных элементов модели
+        # (несколько взаимодействующих WEIR-водосливов в LAK, MVR, транзиентный LAK):
+        # на SIMPLE/MODERATE стационарный период не сходится (PACKAGE ...-stage
+        # CAUSED CONVERGENCE FAILURE).
+        # linear_acceleration=BICGSTAB обязателен при Newton (матрица несимметрична).
         ModflowIms(
             self.sim,
-            complexity="SIMPLE",
-            linear_acceleration="BICGSTAB",
-            # outer_dvclose=1e-4,
-            # inner_dvclose=1e-5,
-            # rcloserecord=[0.1, "L2NORM_RCLOSE"],
-            outer_maximum=300,
+            complexity="COMPLEX",
+            # complexity="MODERATE",
+            # complexity="SIMPLE",
+            outer_maximum=500,
+            outer_dvclose=1e-4,
             inner_maximum=100,
+            inner_dvclose=1e-4,
+            under_relaxation="DBD",
+            # under_relaxation_theta=0.9,
+            # under_relaxation_kappa=0.001,
+            # under_relaxation_momentum=0.001,
+            # under_relaxation_gamma=0.1,
+            # backtracking_number=20,
+            # backtracking_tolerance=1.1,
+            # backtracking_reduction_factor=0.2,
+            # backtracking_residual_limit=100,
+            linear_acceleration="BICGSTAB",
+            # reordering_method="RCM",
         )
 
     def create_sim(self) -> ModflowGwf:
@@ -44,11 +60,16 @@ class MF6Builder:
         )
         self.create_tdis()
         self.create_ims()
+        # NEWTON UNDER_RELAXATION — Newton-Raphson с псевдо-транзиентным продолжением.
+        # Устраняет DRY/WET-переключения ячеек (особенно в стационарных периодах).
+        # UNDER_RELAXATION помогает сходимости при плохих начальных условиях.
         self.model = ModflowGwf(
             self.sim,
             modelname=cfg.name,
             save_flows=True,
-            newtonoptions="UNDER_RELAXATION",
+            # newtonoptions="UNDER_RELAXATION",
+            newtonoptions="NEWTON",
+            # newtonoptions="NEWTON UNDER_RELAXATION",
         )
         return self.model
 
@@ -57,6 +78,7 @@ class MF6Builder:
             self.model,
             pname="oc",
             budget_filerecord=f"{self.ctx.base.name}.cbb",
+            budgetcsv_filerecord=f"{self.ctx.base.name}.cbb.csv",
             head_filerecord=f"{self.ctx.base.name}.hds",
             headprintrecord=[("COLUMNS", 10, "WIDTH", 15, "DIGITS", 6, "GENERAL")],
             saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],

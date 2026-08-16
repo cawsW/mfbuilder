@@ -16,8 +16,10 @@ import matplotlib.patheffects as pe
 from matplotlib.colors import LogNorm, Normalize, BoundaryNorm
 from matplotlib.patches import Patch
 from matplotlib.lines import Line2D
+import matplotlib.patheffects as patheffects
 from pyproj import CRS, Transformer
 from scipy.interpolate import interp1d
+from scipy.interpolate import PchipInterpolator
 
 from mfbuilder.maps.protocols import IMapLayer
 from mfbuilder.dto.maps import VectorLayerConfig, RasterLayerConfig, BasemapConfig, FlopyLayerConfig, AnnotationLayerConfig, PestLayerConfig
@@ -54,7 +56,7 @@ class BasemapLayer(IMapLayer):
                     zorder=self.config.zorder,
                     attribution=''
                 )
-                custom_text = 'EPSG:28412'
+                custom_text = 'EPSG:2497'
                 ax.text(
                     0.98,
                     0.02,
@@ -317,9 +319,32 @@ class VectorLayer(IMapLayer):
             label_text = str(row[column])
 
             # Позиции
-            placements = [('left', 'bottom', 5, 5), ('right', 'bottom', -5, 5),
-                          ('center', 'top', 0, -5), ('center', 'bottom', 0, 5)]
+            POSITION_MAP = {
+                'top': ('center', 'bottom', 0, 5),
+                'bottom': ('center', 'top', 0, -5),
+                'left': ('right', 'center', -5, 0),
+                'right': ('left', 'center', 5, 0),
+                'top-left': ('right', 'bottom', -5, 5),
+                'top-right': ('left', 'bottom', 5, 5),
+                'bottom-left': ('right', 'top', -5, -5),
+                'bottom-right': ('left', 'top', 5, -5),
+                'center': ('center', 'center', 0, 0),
+            }
 
+            # 1. Формируем список кандидатов на основе конфига
+            if getattr(lbl_conf, 'auto_placement', True):
+                placements = [
+                    ('left', 'bottom', 5, 5),
+                    ('right', 'bottom', -5, 5),
+                    ('center', 'top', 0, -5),
+                    ('center', 'bottom', 0, 5)
+                ]
+            else:
+                # Берем конкретную позицию из конфига (по умолчанию 'top')
+                pos_key = getattr(lbl_conf, 'position', 'top')
+                placements = [POSITION_MAP.get(pos_key, ('center', 'top', 0, -5))]
+
+            # 2. Отрисовка
             for ha, va, off_x, off_y in placements:
                 t_obj = ax.annotate(
                     label_text, xy=(p.x, p.y), xytext=(off_x, off_y),
@@ -329,11 +354,16 @@ class VectorLayer(IMapLayer):
                 )
 
                 bbox = t_obj.get_window_extent(renderer).expanded(1.05, 1.05)
-                overlap = any(bbox.overlaps(o) for o in occupied_bboxes)
+
+                # Если авто-подбор отключен, считаем, что перекрытия нет
+                if not getattr(lbl_conf, 'auto_placement', True):
+                    overlap = False
+                else:
+                    overlap = any(bbox.overlaps(o) for o in occupied_bboxes)
 
                 if not overlap:
                     occupied_bboxes.append(bbox)
-                    if lbl_conf.halo:
+                    if getattr(lbl_conf, 'halo', False):
                         t_obj.set_path_effects([
                             pe.withStroke(linewidth=lbl_conf.halo_width, foreground=lbl_conf.halo_color),
                             pe.Normal()
@@ -458,7 +488,9 @@ class AnnotationLayer(IMapLayer):
                 str(row[self.config.text_column]),
                 color=self.config.color,
                 rotation=rotation,
-                zorder=self.config.zorder
+                zorder=self.config.zorder,
+                fontdict={'fontsize': self.config.fontsize},
+                path_effects = [patheffects.withStroke(linewidth=2, foreground='white')]
             )
 
     def _resolve_rotation(self, row: gpd.GeoSeries) -> float:
@@ -497,8 +529,7 @@ class FlopyCrossSection:
         line = self._load_line_coords()
         if not line:
             return
-
-        pmv = flopy.plot.PlotCrossSection(model=self.model, line={'line': line}, ax=ax)
+        pmv = flopy.plot.PlotCrossSection(model=self.model, line={'line': line}, ax=ax, geographic_coords=True)
         data = self._get_array_data()
         if data is None:
             return
@@ -516,8 +547,12 @@ class FlopyCrossSection:
             masked_values=self.config.masked_values
         )
         head = self._get_heads_data()
-        nlay = self.model.modelgrid.nlay
-        colors = plt.cm.Spectral(np.linspace(0, 1, nlay))
+        if not self.config.layers:
+            nlay = self.model.modelgrid.nlay
+            colors = plt.cm.Spectral(np.linspace(0, 1, nlay))
+        else:
+            nlay = self.config.layers
+            colors = plt.cm.Spectral(np.linspace(0, 1, len(nlay)))
         self._plot_head_surfaces_smooth(pmv, head, ax, nlay, colors)
         pmv.plot_grid(color=self.config.grid_color, linewidth=self.config.grid_linewidth)
         # plt.colorbar(pa, shrink=0.75)
@@ -547,9 +582,10 @@ class FlopyCrossSection:
 
     def _plot_head_surfaces_smooth(self, pmv, head, ax, nlay, colors):
         self.legend_handles = []
-        for i in range(nlay):
-            label = f"Поверхность подземных вод {i + 1} слоя"
-            color = colors[i]
+        seq = list(range(nlay)) if type(nlay) is int else nlay
+        for idx, i in enumerate(seq):
+            label = f"Поверхность подземных вод {i + 1} слоя (на разрезе)"
+            color = colors[idx]
 
             # Запоминаем количество artist'ов ДО вызова plot_surface
             n_lines_before = len(ax.lines)
@@ -609,13 +645,11 @@ class FlopyCrossSection:
             if len(xs) >= 4:
                 x_new = np.linspace(xs[0], xs[-1], max(500, len(xs) * 5))
                 try:
-                    f = interp1d(xs, ys, kind='cubic')
+                    f = PchipInterpolator(xs, ys)
                     y_new = f(x_new)
                 except Exception:
                     y_new = np.interp(x_new, xs, ys)
-                ax.plot(x_new, y_new, color=color, lw=1.5, label=label)
-            else:
-                ax.plot(xs, ys, color=color, lw=1.5, label=label)
+                ax.plot(x_new, y_new, color=color, lw=2.5, label=label)
 
             self.legend_handles.append(Line2D([0], [0], color=color, lw=1.5, label=label))
 
@@ -647,6 +681,7 @@ class FlopyCrossSection:
 
         if geom.geom_type == 'LineString':
             self._line_coords = list(geom.coords)
+            # self._line_coords = list(geom.coords)[::-1]
             return self._line_coords
 
         if geom.geom_type == 'MultiLineString':
@@ -889,7 +924,8 @@ class FlopyCrossSection:
                 sim_ws=ws,
                 verbosity_level=0
             )
-            model = sim.get_model(name) if name else sim.get_model()
+            # model = sim.get_model(name) if name else sim.get_model()
+            model = sim.get_model()
             self._model_cache[cache_key] = model
             return model
         except Exception as e:
@@ -1092,6 +1128,7 @@ class FlopyLayer(IMapLayer):
 
     def _draw_parameter(self, pmv: flopy.plot.PlotMapView):
         data = self._get_array_data()
+        print(data)
         if data is None or np.all(np.isnan(data)):
             print(f"Warning: No data to plot for {self.config.parameter}")
             return
@@ -1212,7 +1249,10 @@ class FlopyLayer(IMapLayer):
             return self.model.npf.k22.array[layer_idx]
         if param_name in ['rch', 'recharge'] and hasattr(self.model, 'rch'):
             return self._get_recharge_data(stress_period)
-
+        if param_name in ['ghb'] and hasattr(self.model, 'ghb'):
+            return self._get_ghb_data(stress_period, layer_idx)
+        if param_name in ['drn'] and hasattr(self.model, 'drn'):
+            return self._get_drn_data(stress_period, layer_idx)
         if param_name == "heads":
             return self._get_heads_data()
 
@@ -1221,8 +1261,16 @@ class FlopyLayer(IMapLayer):
     def _get_heads_data(self):
         head_file = os.path.join(self.config.model_ws, f"{self.config.model_nam}.hds")
         head = flopy.utils.HeadFile(head_file)
+        times = head.get_times()
+        hds = head.get_data(totim=times[self.config.stress_period])
+        if hds.ndim == 2:
+            head_vals = hds[0, :]
+        else:
+            head_vals = hds
+        # === Присоединяем к GeoDataFrame ===
+        # return head.get_alldata()[self.config.stress_period][self.config.layer][-1]
+        return head_vals[self.config.layer][0]
 
-        return head.get_alldata()[self.config.stress_period][self.config.layer][0]
 
     def _get_recharge_data(self, stress_period):
         """Вспомогательный метод специально для сложной структуры RCH."""
@@ -1233,6 +1281,16 @@ class FlopyLayer(IMapLayer):
         if rch_array.ndim == 3:  # (sp, lay, ncpl)
             return rch_array[stress_period, 0, :]
         return rch_array[stress_period]
+
+    def _get_ghb_data(self, stress_period, layer_idx):
+        """Вспомогательный метод специально для сложной структуры RCH."""
+        array = self.model.ghb.stress_period_data.to_array()['bhead']
+        return array[layer_idx]
+
+    def _get_drn_data(self, stress_period, layer_idx):
+        """Вспомогательный метод специально для сложной структуры RCH."""
+        array = self.model.drn.stress_period_data.to_array()['elev']
+        return array[layer_idx]
 
     def get_legend_handles(self) -> List[Any]:
         handles = []

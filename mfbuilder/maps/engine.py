@@ -23,7 +23,6 @@ class MapBuilder:
             self.project_crs = CRS.from_user_input(self.config.settings.crs)
         except Exception:
             self.project_crs = self.config.settings.crs
-
         self.layout = MapLayout(
             figsize=self.config.settings.figsize,
             use_inset=self.config.inset_map.enabled,

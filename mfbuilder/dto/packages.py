@@ -101,17 +101,53 @@ class WelFeature(SourceSinksFeature):
     rate: float | str  # может быть числом или именем поля (например, "rate")
 
 
+class ChdFeature(SourceSinksFeature):
+    """Граница постоянного напора (CHD)."""
+    head: float | Path | str
+
+
 class LakFeature(SourceSinksFeature):
     """Озеро/пруд (полигон), задаётся пакетом LAK."""
-    head: float | Path | str  # начальный уровень озера (strt)
+    head: float | Path | str  # начальный уровень озера (strt); при status=CONSTANT - принудительный уровень (например, НПУ) для этого периода
     cond: float | str  # проводимость ложа озера (bedleak)
-    runoff: float | str = 0.0  # поверхностный приток в озеро
+    runoff: float | str = 0.0  # поверхностный приток в озеро (игнорируется, если заданы precip и runoff_coeff - см. ниже)
     evaporation: float | str = 0.0  # испарение с зеркала озера
+    status: str | None = None  # ACTIVE (по умолчанию) | INACTIVE | CONSTANT - режим озера на этот stress-период
+    # Автоматический расчёт runoff = (площадь_пруда * catchment_multiplier) * precip * runoff_coeff.
+    # Заполняются оба (precip и runoff_coeff) - тогда поле runoff выше не используется.
+    precip: float | str | None = None  # осадки за период, м/сут
+    runoff_coeff: float | str | None = None  # доля осадков, уходящая в поверхностный сток (0..1)
+    catchment_multiplier: float | str = 4.0  # во сколько раз водосбор больше зеркала пруда (грубая оценка)
+    # Прямые осадки на зеркало озера (laksetting "rainfall", L/T - MF6 сам умножает на площадь).
+    # Если precip задан, а auto_rainfall не отключён - rainfall = precip автоматически.
+    auto_rainfall: bool = True
+
+
+class LakOutletFeature(BaseModel):
+    """Связь между озёрами (переливные трубы/водосбросы) — блок OUTLETS пакета LAK.
+
+    Каждая линия соединяет два полигона озёр (LakFeature): начало линии -
+    исток (lakein), конец линии - приёмник (lakeout). Если конец линии не
+    попадает ни в одно озеро, сток считается уходящим из модели (lakeout=0).
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    geometry: Path | shapely_base.BaseGeometry | list[shapely_base.BaseGeometry]
+    couttype: str = "WEIR"
+    invert: float | str  # отметка порога перелива/трубы
+    width: float | str = 0.5  # ширина водослива / условный диаметр трубы
+    rough: float | str = 0.61  # коэффициент шероховатости (только для MANNING)
+    slope: float | str = 9.8  # уклон (только для MANNING)
+    match_tolerance: float = 1.0  # допуск (м) для привязки концов линии к полигону озера
+
+    def get_filtered_geometry(self):
+        return SourceSinksFeature.load_geometry(self.geometry)
 
 
 class SourceSinksZone(BaseModel):
     """Одна зона источников (например, riv.0 или wel.0)."""
-    data: list[RivFeature | WelFeature | DrnFeature | GhbFeature | LakFeature]  # или Union позже
+    data: list[RivFeature | WelFeature | DrnFeature | GhbFeature | LakFeature | ChdFeature]  # или Union позже
+    outlets: list[LakOutletFeature] = Field(default_factory=list)  # только для lak
 
 
 class SourcePackageConfig(BaseModel):

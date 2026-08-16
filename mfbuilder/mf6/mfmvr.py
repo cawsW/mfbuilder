@@ -102,6 +102,34 @@ class _PackageCellsIndex:
         return int(self._gdf.loc[nearest_idx, "record_index"])
 
 
+class _LakBoundnameIndex:
+    """Индекс озёр пакета LAK по boundname -> номер озера (ifno).
+
+    В отличие от простых пакетов (DRN/RIV/...), у LAK нет
+    stress_period_data с cellid, а MVR-идентификатором озера-приёмника
+    является номер озера, а не ячейка сетки - поэтому привязка идёт не по
+    ближайшей точке, а напрямую по boundname.
+    """
+
+    def __init__(self, package):
+        data = package.packagedata.get_data()
+        self._map = {
+            _normalize_boundname(rec["boundname"]): int(rec["ifno"])
+            for rec in data
+        }
+
+    def resolve(self, boundname: str) -> int:
+        if boundname not in self._map:
+            raise ValueError(
+                f"В пакете LAK не найдено озеро с boundname='{boundname}'"
+            )
+        return self._map[boundname]
+
+
+def _is_lak(package) -> bool:
+    return getattr(package, "package_type", None) == "lak"
+
+
 class MF6MvrBuilder:
     """Построитель пакета MVR на основе точек-перетоков."""
 
@@ -125,13 +153,28 @@ class MF6MvrBuilder:
                 package_refs.add(donor_pkg.package_name)
                 package_refs.add(acceptor_pkg.package_name)
 
+                if _is_lak(donor_pkg):
+                    raise ValueError(
+                        "LAK не может быть 'from' в MVR: сток из озера настраивается "
+                        "через блок OUTLETS пакета LAK (sources.lak.<period>.outlets), "
+                        "а не через MVR."
+                    )
+                acceptor_is_lak = _is_lak(acceptor_pkg)
+
                 donor_index = _PackageCellsIndex(self.grid, donor_pkg, sp, link.from_.boundname)
-                acceptor_index = _PackageCellsIndex(self.grid, acceptor_pkg, sp, link.to.boundname)
+                acceptor_index = (
+                    _LakBoundnameIndex(acceptor_pkg) if acceptor_is_lak
+                    else _PackageCellsIndex(self.grid, acceptor_pkg, sp, link.to.boundname)
+                )
                 points = self._load_points(link)
 
                 for geom in points.geometry:
                     from_cell = donor_index.nearest_cell(geom)
-                    to_cell = acceptor_index.nearest_cell(geom)
+                    to_cell = (
+                        acceptor_index.resolve(_normalize_boundname(link.to.boundname))
+                        if acceptor_is_lak
+                        else acceptor_index.nearest_cell(geom)
+                    )
                     period_records[sp].append(
                         (
                             donor_pkg.package_name,
@@ -143,9 +186,7 @@ class MF6MvrBuilder:
                         )
                     )
         maxmvr = max(len(recs) for recs in period_records.values())
-        packages = list(package_refs)
-        print(period_records)
-        print(maxmvr, packages, len(packages))
+        packages = [(name,) for name in package_refs]
 
         return ModflowGwfmvr(
             self.model,
@@ -153,6 +194,7 @@ class MF6MvrBuilder:
             maxpackages=len(packages),
             packages=packages,
             print_flows=True,
+            budgetcsv_filerecord=f"{self.model.name}.mvr.bud.csv",
             perioddata=period_records,
         )
 

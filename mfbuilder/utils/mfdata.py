@@ -126,6 +126,8 @@ class FieldResolverCache:
             if name in base_fields:
                 continue
             val = getattr(self.feature, name, None)
+            if val is None:
+                continue  # необязательное поле не задано - нечего резолвить (например, status)
             cache[name] = FieldResolver(val, self.grid, self.geom_gdf)
         return cache
 
