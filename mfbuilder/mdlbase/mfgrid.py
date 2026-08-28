@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 from plpygis import Geometry
+from shapely.geometry import MultiPolygon
 from flopy.utils import GridIntersect
 from flopy.utils.gridgen import Gridgen
 from flopy.discretization import StructuredGrid
@@ -96,7 +97,9 @@ class StructuredGridBuilder(BaseGridBuilder):
 class VertexGridBuilder(BaseGridBuilder):
     def __init__(self, ctx: ProjectConfig):
         super().__init__(ctx)
-        self.g = self._create_gridgen()
+        # Triangle/Voronoi не нуждается в объекте Gridgen — создаём его только
+        # если реально будем строить сетку через gridgen (quadtree).
+        self.g = self._create_gridgen() if self.data.method == "gridgen" else None
 
     def _create_gridgen(self):
         return Gridgen(self._create_temp_dis(), model_ws=self.data.gridgen_path, exe_name=self.data.gridgen_exe)
@@ -126,12 +129,69 @@ class VertexGridBuilder(BaseGridBuilder):
         if refinement.polygon:
             self._add_refinement(refinement.polygon, "polygon")
 
-    def _get_gridprops(self):
+    def _get_gridprops_gridgen(self) -> dict:
         self._active_domain()
         if self.data.refinement:
             self._refinement_grid()
         self.g.build(verbose=False)
         return self.g.get_gridprops_disv()
+
+    def _voronoi_refinement_regions(self):
+        """Готовит (полигон, макс_площадь) для каждой зоны уточнения.
+
+        point/line геометрия буферизуется в полигон (buffer или, по умолчанию,
+        cell_size / 2**level). Площадь зоны = базовая площадь ячейки / 4**level —
+        то же соотношение, что даёт один уровень quadtree-дробления в gridgen,
+        чтобы одинаковый level давал сопоставимую густоту сетки в обоих методах.
+        """
+        base_area = float(self.data.cell_size) ** 2
+        regions = []
+        refinement = self.data.refinement
+        if not refinement:
+            return regions
+        for features, is_area in ((refinement.polygon, True), (refinement.line, False), (refinement.point, False)):
+            if not features:
+                continue
+            for feature in features:
+                area = base_area / (4 ** feature.level)
+                default_buffer = self.data.cell_size / (2 ** feature.level)
+                for geom in feature.geometry:
+                    poly = geom if is_area else geom.buffer(feature.buffer or default_buffer)
+                    regions.append((poly, area))
+        return regions
+
+    def _get_gridprops_voronoi(self) -> dict:
+        from flopy.utils.triangle import Triangle
+        from flopy.utils.voronoi import VoronoiGrid
+
+        tri = Triangle(model_ws=self.data.gridgen_path, exe_name=self.data.triangle_exe, angle=30)
+
+        borders = list(self.data.border.geoms) if isinstance(self.data.border, MultiPolygon) else [self.data.border]
+        for border_part in borders:
+            tri.add_polygon(list(border_part.exterior.coords))
+
+        regions = self._voronoi_refinement_regions()
+        for poly, _ in regions:
+            tri.add_polygon(list(poly.exterior.coords))
+
+        base_area = float(self.data.cell_size) ** 2
+        for i, border_part in enumerate(borders):
+            pt = border_part.representative_point().coords[0]
+            tri.add_region(pt, i, maximum_area=base_area)
+        for i, (poly, area) in enumerate(regions, start=len(borders)):
+            pt = poly.representative_point().coords[0]
+            tri.add_region(pt, i, maximum_area=area)
+
+        tri.build(verbose=False)
+        vgrid = VoronoiGrid(tri)
+        gridprops = vgrid.get_disv_gridprops()
+        gridprops["nlay"] = self.data.nlay
+        return gridprops
+
+    def _get_gridprops(self) -> dict:
+        if self.data.method == "voronoi":
+            return self._get_gridprops_voronoi()
+        return self._get_gridprops_gridgen()
 
 
 class UnstructuredGridBuilder(BaseGridBuilder):

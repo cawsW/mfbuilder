@@ -9,6 +9,7 @@ from mfbuilder.dto.types import EngineType
 from mfbuilder.handlers import BuilderFactory, GridFactory, SourceSinksFactory, FlowParametersFactory, \
     ObservationFactory
 from mfbuilder.mf6.mfmvr import MF6MvrBuilder
+from mfbuilder.mf6.zonebudget import MF6ZoneBudgetBuilder
 
 class LoaderYaml:
     @staticmethod
@@ -77,6 +78,14 @@ class Director:
 
         if cfg.outputs.run:
             builder.run()
+
+        if cfg.outputs.run and cfg.outputs.zonebudget.enabled:
+            if cfg.base.engine == EngineType.MF6:
+                zb_builder = MF6ZoneBudgetBuilder(model, grid, cfg.outputs.zonebudget, cfg.base)
+                zb_builder.build()
+                logging.info("zonebudget created")
+            else:
+                logging.warning("ZoneBudget поддерживается только для MF6 и будет пропущен.")
         # observations.compare_results()
 
         # flopy.export.shapefile_utils.model_attributes_to_shapefile(os.path.join("..", "output", "vectors", "grid.shp"),

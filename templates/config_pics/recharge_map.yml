@@ -1,0 +1,47 @@
+# Шаблон карты инфильтрационного питания (RCH).
+# Пути — относительно директории запуска скрипта (обычно scripts/ проекта).
+#
+# Использование:
+#   from mfbuilder.maps.engine import MapBuilder
+#   MapBuilder("../configs/pics/recharge_map.yml").build()
+
+settings:
+  title: "Карта инфильтрационного питания"
+  figsize: [16, 12]
+  output: "../output/pictures/recharge.png"
+  crs: "EPSG:3857"
+  legend_loc: "upper right"
+  base_fontsize: 14
+
+main_map:
+  layers:
+    - type: basemap
+      provider: "OpenStreetMap.Mapnik"
+      alpha: 0.8
+
+    - type: vector
+      path: "../input/vectors/border.shp"
+      zorder: 2
+      label: "Граница модели"
+      style:
+        edgecolor: "red"
+        linewidth: 2
+        facecolor: None
+
+    - type: flopy
+      model_ws: "../models/model_v1"
+      model_nam: "model_name"
+      layer: 0                # для RCH практически всегда 0 (питание задаётся на верхний активный слой)
+      stress_period: 0        # какой stress period показывать
+      zorder: 1
+      grid_enabled: true
+      grid_color: "gray"
+      parameter: "rch"
+      style:
+        cmap: "managua"       # если cmap недоступен в установленном matplotlib — замените на "YlGnBu" и т.п.
+        classification: "quantile"
+        n_classes: 10
+        alpha: 0.8
+      colorbar:
+        enabled: true
+        label: "Инфильтрационное питание, м/сут"

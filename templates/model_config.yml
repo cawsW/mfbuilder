@@ -1,0 +1,180 @@
+# =============================================================================
+# Базовый шаблон главного конфигурационного файла для сборки модели MODFLOW6
+# через mfbuilder (mfbuilder/dto/base.py -> ProjectConfig).
+#
+# Скопируйте этот файл в projects/<project>/configs/config_v1.yml и заполните
+# под свой проект. Раскомментируйте только те блоки, которые нужны — секции
+# parameters.evt, parameters.sto, grid.refinement, sources.*, observations,
+# mvr необязательны и могут отсутствовать целиком.
+#
+# Пути ниже даны относительно директории configs/ внутри проекта — так же,
+# как workspace и exe_path по умолчанию (../models/..., ../../../bin) —
+# запускать сборку модели нужно с рабочей директорией projects/<project>/configs.
+# =============================================================================
+
+default:
+  vector_dir: &vectors ../input/vectors
+  raster_dir: &rasters ../input/rasters
+
+# --- Общие параметры модели -------------------------------------------------
+base:
+  name: model_name              # короткое имя модели (используется flopy как model name)
+  workspace: ../models/model_v1 # куда flopy запишет файлы модели (создастся автоматически)
+  engine: mf6                   # mf6 | mf2005
+  steady: true                  # стационарная модель целиком (для нестационарной используйте tdis.steady)
+  tunits: DAYS                  # YEARS | DAYS | MINUTES | SECONDS
+  # exe_path: ../../../bin      # директория с исполняемыми файлами (по умолчанию берётся из bin/<engine>)
+
+# --- Разбивка по времени (stress periods) -----------------------------------
+# Для чисто стационарной модели (base.steady: true) блок tdis можно не указывать
+# вовсе — возьмётся значение по умолчанию (один стационарный период).
+tdis:
+  perlen: [1]          # длина каждого stress period, [сут]
+  nstp: [1]               # количество шагов на period
+  tsmult: [1]           # множитель длины шага
+  steady: [true]    # стационарный/нестационарный по периодам
+
+grid:
+  type: vertex                  # structured | vertex | unstructured
+  method: gridgen                # только для type: vertex — gridgen (quadtree) | voronoi (Triangle+Voronoi)
+  nlay: 3                       # количество слоёв
+  cell_size: 100                # базовый размер ячейки, м
+  epsg: "EPSG:3857"             # система координат модели
+  border: !join [*vectors, border.shp]     # граница модели (полигон)
+  top: !join [*rasters, dem.tif]           # кровля модели (растр или число)
+  botm:                                    # по одному элементу на каждый слой (nlay штук)
+    - elev: !join [*rasters, botm_1.tif]   # можно elev (абсолютная отметка подошвы)
+    - elev: !join [*rasters, botm_2.tif]   # можно elev (абсолютная отметка подошвы)
+    - elev: !join [*rasters, botm_3.tif]   # можно elev (абсолютная отметка подошвы)
+  min_thickness: 1              # минимальная мощность слоя, м
+
+  # Локальное измельчение сетки (только для type: vertex/unstructured)
+  # gridgen_exe: ../../../bin/gridgen    # для method: gridgen
+  # triangle_exe: ../../../bin/triangle  # для method: voronoi
+  # refinement:
+  #   polygon:
+  #     - geometry: !join [*vectors, refine_zone.shp]
+  #       level: 2
+  #   line:
+  #     - geometry: !join [*vectors, rivers_line.shp]
+  #       level: 2
+  #   point:
+  #     - geometry: !join [*vectors, wells.shp]
+  #       level: 3
+
+# --- Гидрогеологические параметры (пакеты NPF/RCH/IC/EVT/STO) ---------------
+# Значение любого параметра ниже (k, k33, k22, rech, strt, ss, sy, ...) можно
+# задать: числом, путём до растра, путём до готового массива (.npy/.txt —
+# должен точно совпадать по размеру с сеткой) или полигональной зональностью:
+#   { file: !join [*vectors, k_zones.shp], field: "k_value", default: 1.0 }
+parameters:
+  npf:
+    k: [10, 5, 1]                 # Kh по слоям (число / растр / зональность), список длиной nlay
+    icelltype: [1, 0, 0]          # 0 - confined, 1 - convertible, по слоям
+    k33overk: true                # k33 задан как отношение к k (иначе — абсолютные значения)
+    k33: [0.1, 0.1, 0.1]          # Kv по слоям
+    # k22overk: true
+    # k22: [1, 1, 1]               # анизотропия в плане (по умолчанию = k)
+    # angle1: [0, 0, 0]
+
+  rch:
+    rech: 0.0002                  # инфильтрационное питание, м/сут (число / растр / зональность)
+    # для нестационарной модели — словарь по периодам:
+    # 0:
+    #   rech: 0.0002
+    # 1:
+    #   rech: !join [*rasters, rch_period1.tif]
+
+  ic:
+    strt: [150, 140, 130]         # начальные напоры по слоям (число / растр)
+    # для нестационарной модели можно задать по периодам:
+    # strt:
+    #   0: [150, 140, 130]
+
+  # sto:                           # обязателен, если есть нестационарные периоды (tdis.steady содержит false)
+  #   ss: [1.0e-5, 1.0e-5, 1.0e-5]
+  #   sy: [0.15, 0.05, 0.05]
+  #   iconvert: [1, 0, 0]
+
+  # evt:
+  #   surface: !join [*rasters, dem.tif]
+  #   rate: 0.001
+  #   depth: 2
+
+# --- Источники/стоки (границы) -----------------------------------------------
+# Один блок на пакет (riv/wel/drn/ghb/chd/lak), внутри — словарь по stress period.
+# Геометрия (geometry) — путь до векторного слоя; значения параметров можно
+# задавать числом, именем поля в атрибутах слоя или выражением (например,
+# depth: "stage - 3" для RIV — использует уже вычисленные поля этой же фичи).
+sources:
+  riv:
+    0:
+      data:
+        - geometry: !join [*vectors, rivers.shp]
+          exact: true
+          stage: !join [*rasters, dem.tif]
+          cond: 500
+          depth: 2
+          layers: [1]
+          boundname: "river"
+
+  wel:
+    0:
+      data:
+        - geometry: !join [*vectors, wells.shp]
+          layers: layer          # имя поля в атрибутах слоя со слоем
+          rate: rate              # имя поля с дебитом
+
+  # ghb:
+  #   0:
+  #     data:
+  #       - geometry: !join [*vectors, ghb_boundary.shp]
+  #         bhead: !join [*rasters, gwl.tif]
+  #         cond: 20
+  #         layers: [3]
+
+  # drn:
+  #   0:
+  #     data:
+  #       - geometry: !join [*vectors, drains.shp]
+  #         head: !join [*rasters, drn_elev.tif]
+  #         cond: 10
+  #         layers: [1]
+
+  # chd:
+  #   0:
+  #     data:
+  #       - geometry: !join [*vectors, chd_boundary.shp]
+  #         head: 100
+  #         layers: [1]
+
+# --- Наблюдения (для калибровки) ---------------------------------------------
+observations:
+  heads:
+    - geometry: !join [*vectors, wells_heads.shp]
+      layers: layer              # имя поля со слоем наблюдения
+      name: well_id               # имя поля с идентификатором скважины
+      head: head                  # имя поля с наблюдённым уровнем
+      time: date                  # имя поля с датой/периодом наблюдения
+
+# --- Что делать после сборки --------------------------------------------------
+outputs:
+  write_input: true
+  run: true
+  # Баланс через ZoneBudget считается автоматически после run (нужен bin/zbud6).
+  # По умолчанию (без этого блока) — зоны = номера слоёв; итог по всей модели
+  # считается всегда дополнительно, независимо от zones. Отключить: enabled: false.
+  # zonebudget:
+  #   enabled: true
+  #   zones: !join [*vectors, zones.shp]   # векторный файл с полем-номером зоны
+  #   zone_field: zone
+  #   output_dir: ../output/tables
+
+# --- MVR (перетоки между пакетами источников/стоков), опционально ------------
+# mvr:
+#   0:
+#     data:
+#       - geometry: !join [*vectors, mvr_links.shp]
+#         from: {pkg: "riv", boundname: "river"}
+#         to: {pkg: "wel", boundname: "intake"}
+#         factor: 1.0

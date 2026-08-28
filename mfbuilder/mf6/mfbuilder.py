@@ -5,6 +5,25 @@ from flopy.mf6 import MFSimulation, ModflowGwf, ModflowIms, ModflowTdis, Modflow
 from mfbuilder.mfmain import ProjectConfig
 
 
+def default_ims_kwargs() -> dict:
+    """Настройки решателя IMS, общие для сборки модели из конфига (MF6Builder)
+    и пересборки из geojson (mfbuilder.export.ModelImporter)."""
+    return dict(
+        # COMPLEX (не SIMPLE) - нужен из-за нелинейных элементов модели
+        # (несколько взаимодействующих WEIR-водосливов в LAK, MVR, транзиентный LAK):
+        # на SIMPLE/MODERATE стационарный период не сходится (PACKAGE ...-stage
+        # CAUSED CONVERGENCE FAILURE).
+        # linear_acceleration=BICGSTAB обязателен при Newton (матрица несимметрична).
+        complexity="COMPLEX",
+        outer_maximum=500,
+        outer_dvclose=1e-4,
+        inner_maximum=100,
+        inner_dvclose=1e-4,
+        under_relaxation="DBD",
+        linear_acceleration="BICGSTAB",
+    )
+
+
 class MF6Builder:
     """MODFLOW 6 builders (stub). Later: use flopy.mf6 to make MFSimulation/ModflowGwf etc."""
 
@@ -23,32 +42,7 @@ class MF6Builder:
         )
 
     def create_ims(self) -> None:
-        # COMPLEX (не SIMPLE) - нужен из-за нелинейных элементов модели
-        # (несколько взаимодействующих WEIR-водосливов в LAK, MVR, транзиентный LAK):
-        # на SIMPLE/MODERATE стационарный период не сходится (PACKAGE ...-stage
-        # CAUSED CONVERGENCE FAILURE).
-        # linear_acceleration=BICGSTAB обязателен при Newton (матрица несимметрична).
-        ModflowIms(
-            self.sim,
-            complexity="COMPLEX",
-            # complexity="MODERATE",
-            # complexity="SIMPLE",
-            outer_maximum=500,
-            outer_dvclose=1e-4,
-            inner_maximum=100,
-            inner_dvclose=1e-4,
-            under_relaxation="DBD",
-            # under_relaxation_theta=0.9,
-            # under_relaxation_kappa=0.001,
-            # under_relaxation_momentum=0.001,
-            # under_relaxation_gamma=0.1,
-            # backtracking_number=20,
-            # backtracking_tolerance=1.1,
-            # backtracking_reduction_factor=0.2,
-            # backtracking_residual_limit=100,
-            linear_acceleration="BICGSTAB",
-            # reordering_method="RCM",
-        )
+        ModflowIms(self.sim, **default_ims_kwargs())
 
     def create_sim(self) -> ModflowGwf:
         cfg = self.ctx.base

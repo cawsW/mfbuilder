@@ -2,6 +2,7 @@ from pathlib import Path
 
 import rasterio
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 from flopy.utils.rasters import Raster
 
 
@@ -55,6 +56,98 @@ class RasterHandler:
                 adjusted[i + 1],
             )
         return adjusted
+
+
+class PolygonZoneConfig(BaseModel):
+    """Полигональная зональность: векторный файл + поле со значением параметра.
+
+    Значение из поля `field` каждого полигона переносится на все ячейки сетки,
+    попавшие в этот полигон. Ячейки вне всех полигонов получают `default`.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    file: Path
+    field: str
+    default: float = 0.0
+
+    def rasterize(self, grid) -> np.ndarray:
+        import geopandas as gpd
+        from flopy.utils.gridintersect import GridIntersect
+
+        if not self.file.exists():
+            raise FileNotFoundError(f"Файл зональности не найден: {self.file}")
+        gdf = gpd.read_file(self.file)
+        if self.field not in gdf.columns:
+            raise ValueError(f"В файле {self.file} нет поля '{self.field}'")
+
+        arr = np.full(grid.shape[1:], float(self.default), dtype=float)
+        # Поле с плоским индексом ячейки называется по-разному в зависимости от
+        # версии flopy/типа сетки: 'cellid' (плоский int) или 'cellids' (плоский
+        # int для vertex/unstructured, но (row, col) для structured) — учитываем оба.
+        ncol = grid.ncol if grid.grid_type == "structured" else None
+        ix = GridIntersect(grid)
+        for _, row in gdf.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            value = float(row[self.field])
+            result = ix.intersect(geom, geo_dataframe=False)
+            ids = result.cellid if "cellid" in result.dtype.names else result.cellids
+            for cellid in ids:
+                if isinstance(cellid, (tuple, np.void)):
+                    flat_idx = cellid[0] * ncol + cellid[1]
+                else:
+                    flat_idx = int(cellid)
+                arr.flat[flat_idx] = value
+        return arr
+
+
+_RASTER_SUFFIXES = {".tif", ".tiff", ".asc", ".img", ".grd"}
+_NPY_SUFFIXES = {".npy"}
+_TEXT_SUFFIXES = {".txt", ".dat", ".csv"}
+
+ParamValue = float | int | Path | PolygonZoneConfig
+
+
+def resolve_array(value: ParamValue, grid) -> np.ndarray:
+    """Приводит значение параметра к numpy-массиву на сетке модели.
+
+    Поддерживает: скаляр, полигональную зональность (PolygonZoneConfig),
+    геореференцированный растр (.tif/.asc/...), уже готовый массив на этой
+    сетке (.npy или текстовый .txt/.dat/.csv) — удобно для переиспользования
+    распределения параметра из предыдущего варианта калибровки.
+    """
+    if isinstance(value, (int, float)):
+        return np.full(grid.shape[1:], float(value))
+
+    if isinstance(value, PolygonZoneConfig):
+        return value.rasterize(grid)
+
+    path = Path(value)
+    if not path.exists():
+        raise FileNotFoundError(f"Файл параметра не найден: {path}")
+    suffix = path.suffix.lower()
+
+    if suffix in _RASTER_SUFFIXES:
+        return RasterHandler(path).resample_to_grid(grid)
+
+    if suffix in _NPY_SUFFIXES:
+        arr = np.load(path)
+    elif suffix in _TEXT_SUFFIXES:
+        arr = np.loadtxt(path)
+    else:
+        raise ValueError(f"Неподдерживаемый формат файла параметра: {path}")
+
+    if arr.shape != grid.shape[1:]:
+        raise ValueError(
+            f"Размер массива {path} {arr.shape} не совпадает с сеткой {grid.shape[1:]}"
+        )
+    return arr
+
+
+def resolve_array_list(values: list[ParamValue], grid) -> np.ndarray:
+    """Приводит список значений параметра (по слоям) к 3D numpy-массиву."""
+    return np.array([resolve_array(v, grid) for v in values])
 
 
 class VectorHandler:

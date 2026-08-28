@@ -2,6 +2,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from shapely.geometry import base as shapely_base
 
+from mfbuilder.utils.geometry import try_parse_wkt
+
 
 class HeadObservation(BaseModel):
     """Модель для одной группы наблюдений уровня."""
@@ -21,6 +23,9 @@ class HeadObservation(BaseModel):
         from shapely.geometry.base import BaseGeometry
 
         if isinstance(geom, (str, Path)):
+            wkt_geom = try_parse_wkt(str(geom))
+            if wkt_geom is not None:
+                return gpd.GeoDataFrame(geometry=[wkt_geom])
             path = Path(geom)
             if not path.exists():
                 raise FileNotFoundError(f"Файл не найден: {path}")

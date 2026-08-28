@@ -1,0 +1,56 @@
+# Шаблон карты невязок калибровки (mfbuilder.maps.engine.MapBuilder).
+# Пути — относительно директории запуска скрипта (обычно scripts/ проекта).
+#
+# Ожидается векторный слой точек наблюдений с полем невязки (например,
+# residual = фактический уровень - модельный), заранее посчитанным и
+# сохранённым в output/vectors/heads_residuals.gpkg (или .shp).
+#
+# Использование:
+#   from mfbuilder.maps.engine import MapBuilder
+#   MapBuilder("../configs/pics/residuals_map.yml").build()
+
+settings:
+  title: "Карта невязок калибровки"
+  figsize: [16, 12]
+  output: "../output/pictures/residuals.png"
+  crs: "EPSG:3857"
+  legend_loc: "upper right"
+  base_fontsize: 14
+
+main_map:
+  layers:
+    - type: basemap
+      provider: "OpenStreetMap.Mapnik"
+      alpha: 0.8
+
+    - type: vector
+      path: "../input/vectors/border.shp"
+      zorder: 2
+      label: "Граница модели"
+      style:
+        edgecolor: "red"
+        linewidth: 2
+        facecolor: None
+
+    # Точки наблюдений, закрашенные по величине невязки
+    - type: vector
+      path: "../output/vectors/heads_residuals.gpkg"
+      zorder: 8
+      # filter: "date == '2024-01-01'"  # если в слое несколько дат на одну скважину
+      color_column: "residual"      # имя поля с невязкой в атрибутах слоя
+      label: "Невязка между фактическим и модельным уровнем, м"
+      style:
+        cmap: "coolwarm"
+        markersize: 100
+        # classification: "quantile"
+        n_classes: 10
+        edgecolor: "black"
+      labels:
+        enabled: true
+        column: "well_id"           # имя поля с идентификатором скважины
+        fontsize: 8
+        fontweight: "bold"
+        color: "black"
+        halo: true
+        halo_color: "white"
+        halo_width: 2

@@ -1,0 +1,105 @@
+# Шаблон карты уровней подземных вод (mfbuilder.maps.engine.MapBuilder).
+# Пути в этом файле — относительно директории, из которой запускается
+# скрипт построения карты (обычно projects/<project>/scripts/), т.к. они
+# читаются самим MapBuilder, а не относительно расположения этого yml.
+#
+# Использование:
+#   from mfbuilder.maps.engine import MapBuilder
+#   MapBuilder("../configs/pics/heads_map.yml").build()
+
+settings:
+  title: "Карта уровней подземных вод"
+  figsize: [16, 12]
+  output: "../output/pictures/heads_layer1.png"
+  crs: "EPSG:3857"              # СК модели — как в grid.epsg главного конфига
+  legend_loc: "upper right"
+  base_fontsize: 14
+
+main_map:
+  layers:
+    - type: basemap
+      provider: "CartoDB.Positron"   # OpenStreetMap.Mapnik | CartoDB.Positron | Esri.WorldImagery
+      alpha: 0.8
+
+    - type: vector
+      path: "../input/vectors/border.shp"
+      zorder: 2
+      label: "Граница модели"
+      style:
+        edgecolor: "red"
+        linewidth: 2
+        facecolor: None
+
+    # Слой с расчётными уровнями (закраска по значению) + изолинии
+    - type: flopy
+      model_ws: "../models/model_v1"   # base.workspace из главного конфига
+      model_nam: "model_name"          # base.name из главного конфига
+      layer: 0                          # индекс слоя, 0 — верхний
+      stress_period: -1                 # -1 — последний период; 0 — первый и т.д.
+      parameter: "heads"
+      zorder: 1
+      style:
+        cmap: "BrBG"
+        # vmin: 100
+        # vmax: 240
+        # classification: "quantile"
+        # n_classes: 10
+      contours: true
+      contour_style:
+        levels: [100, 110, 120, 130, 140, 150, 160, 170, 180]
+        colors: "black"
+        linewidths: 0.5
+        fontsize: 10
+      colorbar:
+        enabled: true
+        label: "Уровень подземных вод, м"
+
+    # Точки наблюдений (фактические уровни) поверх расчётной поверхности
+    - type: vector
+      path: "../input/vectors/wells_heads.shp"
+      zorder: 8
+      label: "Скважины наблюдения"
+      style:
+        markersize: 60
+        marker: "o"
+        facecolor: "white"
+        edgecolor: "black"
+        linewidth: 1
+      labels:
+        enabled: true
+        column: "well_id"
+        fontsize: 8
+        fontweight: "bold"
+        color: "black"
+        halo: true
+        halo_color: "white"
+        halo_width: 2
+
+# Геологический разрез вдоль линии — опционально, для профиля уровней/слоёв
+# cross_section:
+#   enabled: true
+#   model_ws: "../models/model_v1"
+#   model_nam: "model_name"
+#   line_path: "../input/vectors/cross_line.shp"
+#   line_color: "#DE1A58"
+#   show_line_on_map: true
+#   parameter: head          # head | k1 | k2 | k3
+#   stress_period: -1
+#   layers: [0, 1, 2]
+#   style:
+#     cmap: "BrBG"
+
+# Врезка (увеличенный фрагмент), опционально
+# inset_map:
+#   enabled: true
+#   xlim: [0, 1000]
+#   ylim: [0, 1000]
+#   layers:
+#     - type: vector
+#       path: "../input/vectors/wells_heads.shp"
+#       zorder: 8
+#       label: "Скважины наблюдения"
+#       style:
+#         markersize: 90
+#         facecolor: "white"
+#         edgecolor: "black"

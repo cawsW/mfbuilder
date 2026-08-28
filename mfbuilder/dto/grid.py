@@ -14,6 +14,7 @@ except Exception as e:
     raise RuntimeError("pydantic is required: pip install pydantic") from e
 
 from mfbuilder.dto.types import Scalar, DelArray, GridType
+from mfbuilder.utils.geometry import try_parse_wkt
 
 
 class BotmLayer(BaseModel):
@@ -42,7 +43,7 @@ class BaseGridConfig(BaseModel):
     type: GridType
     nlay: Annotated[int, Field(gt=0, default=1, description="Количество слоев")]
     cell_size: Annotated[Scalar, Field(gt=0, description="Размер ячейки сетки")]
-    border: Annotated[FilePath | Polygon | None, Field(default=None, description="Граница модели")]
+    border: Annotated[FilePath | Polygon | MultiPolygon | None, Field(default=None, description="Граница модели")]
     epsg: Annotated[str | None, Field(default=None, description="Система координат")]
     top: Annotated[FilePath | Scalar | None, Field(default=None, description="Поверхность модели")]
     botm: Annotated[
@@ -58,6 +59,18 @@ class BaseGridConfig(BaseModel):
     ncol: Annotated[int | None, Field(default=None, description="Количество столбцов сетки")]
     delr: Annotated[DelArray | None, Field(default=None, description="Интервалы вдоль строк")]
     delc: Annotated[DelArray | None, Field(default=None, description="Интервалы вдоль столбцов")]
+
+    @field_validator("border", mode="before")
+    @classmethod
+    def _parse_border_wkt(cls, v):
+        """Если border задан WKT-строкой (например, "POLYGON ((0 0, ...))"),
+        превращает её в shapely-геометрию до проверки типа поля — иначе она
+        попадёт в ветку FilePath и упадёт с 'Path does not point to a file'."""
+        if isinstance(v, str):
+            geom = try_parse_wkt(v)
+            if geom is not None:
+                return geom
+        return v
 
     @model_validator(mode="after")
     def _post(self):
@@ -171,6 +184,11 @@ class RefinementFeature(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     geometry: object = Field(description="Путь к файлу или геометрия shapely")
     level: int = Field(ge=1, description="Уровень уточнения")
+    buffer: Annotated[
+        float | None,
+        Field(default=None, description="Только для method: voronoi — радиус буфера вокруг point/line "
+                                         "при построении зоны уточнения; по умолчанию cell_size / 2**level")
+    ]
 
     @field_validator("geometry", mode="before")
     @classmethod
@@ -183,6 +201,11 @@ class RefinementFeature(BaseModel):
             return [v]
         if isinstance(v, list) and all(isinstance(g, shapely_base.BaseGeometry) for g in v):
             return v
+
+        if isinstance(v, str):
+            geom = try_parse_wkt(v)
+            if geom is not None:
+                return [geom]
 
         if isinstance(v, (str, Path)):
             path = Path(v)
@@ -207,10 +230,16 @@ class RefinementConfig(BaseModel):
 
 class VertexGridConfig(BaseGridConfig):
     type: Annotated[Literal[GridType.VERTEX], Field(GridType.VERTEX, exclude=True)]
+    method: Annotated[
+        Literal["gridgen", "voronoi"],
+        Field(default="gridgen", description="Способ построения вертексной сетки: gridgen (quadtree) или voronoi (Triangle+Voronoi)")
+    ]
     gridgen_path: Annotated[
-        DirectoryPath | FilePath | None, Field(default="../output/vectors/grid", description="Путь до сохранения сетки gridgen")]
+        DirectoryPath | FilePath | None, Field(default="../output/vectors/grid", description="Путь до сохранения сетки gridgen/triangle")]
     gridgen_exe: Annotated[
-        FilePath | None, Field(default="../../../bin/gridgen", description="Исполняемый файл Gridgen")]
+        FilePath | None, Field(default="../../../bin/gridgen", description="Исполняемый файл Gridgen (для method: gridgen)")]
+    triangle_exe: Annotated[
+        FilePath | None, Field(default="../../../bin/triangle", description="Исполняемый файл Triangle (для method: voronoi)")]
     refinement: Annotated[RefinementConfig | None, Field(default=None, description="Параметры уточнения сетки")]
 
 

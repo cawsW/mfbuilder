@@ -1,0 +1,94 @@
+# Шаблон карты граничных условий модели (mfbuilder.maps.engine.MapBuilder).
+# Пути — относительно директории запуска скрипта (обычно scripts/ проекта).
+#
+# Использование:
+#   from mfbuilder.maps.engine import MapBuilder
+#   MapBuilder("../configs/pics/boundary_conditions_map.yml").build()
+
+settings:
+  title: "Карта граничных условий"
+  figsize: [16, 12]
+  output: "../output/pictures/boundary_conditions.png"
+  crs: "EPSG:3857"
+  legend_loc: "upper right"
+  base_fontsize: 14
+
+main_map:
+  layers:
+    - type: basemap
+      provider: "OpenStreetMap.Mapnik"
+      alpha: 0.8
+
+    - type: vector
+      path: "../input/vectors/border.shp"
+      zorder: 2
+      label: "Граница модели"
+      style:
+        edgecolor: "red"
+        linewidth: 2
+        facecolor: None
+
+    # Сетка ячеек + один тип ГУ на flopy-слой; для каждого пакета/слоя/периода
+    # нужен отдельный элемент main_map.layers (bc_enabled рисует ячейки одного
+    # stress period одного слоя одновременно для всех перечисленных пакетов).
+    - type: flopy
+      model_ws: "../models/model_v1"
+      model_nam: "model_name"
+      layer: 0
+      stress_period: 0
+      zorder: 10
+      grid_enabled: true
+      grid_color: "gray"
+      grid_linewidth: 0.3
+      label: "Блоки пакета RIV"
+      bc_enabled: [RIV]
+      bc_colors:
+        RIV: blue
+
+    - type: flopy
+      model_ws: "../models/model_v1"
+      model_nam: "model_name"
+      layer: 0
+      stress_period: 0
+      zorder: 9
+      label: "Блоки пакета WEL"
+      bc_enabled: [WEL]
+      bc_colors:
+        WEL: red
+
+    # - type: flopy
+    #   model_ws: "../models/model_v1"
+    #   model_nam: "model_name"
+    #   layer: 0
+    #   stress_period: 0
+    #   zorder: 8
+    #   label: "Блоки пакета DRN"
+    #   bc_enabled: [DRN]
+    #   bc_colors:
+    #     DRN: yellow
+
+    # - type: flopy
+    #   model_ws: "../models/model_v1"
+    #   model_nam: "model_name"
+    #   layer: 0
+    #   stress_period: 0
+    #   zorder: 7
+    #   label: "Блоки пакета GHB"
+    #   bc_enabled: [GHB]
+    #   bc_colors:
+    #     GHB: green
+
+    # Уровень на границе (GHB) как закрашенный слой вместо/вместе с bc_enabled
+    # - type: flopy
+    #   model_ws: "../models/model_v1"
+    #   model_nam: "model_name"
+    #   layer: 0
+    #   stress_period: 0
+    #   zorder: 6
+    #   parameter: ghb
+    #   style:
+    #     cmap: "twilight"
+    #     n_classes: 10
+    #   colorbar:
+    #     enabled: true
+    #     label: "Уровень на границе модели (GHB), м"

@@ -1,0 +1,51 @@
+# Шаблон карты коэффициента фильтрации (NPF) по одному слою.
+# Пути — относительно директории запуска скрипта (обычно scripts/ проекта).
+#
+# Использование:
+#   from mfbuilder.maps.engine import MapBuilder
+#   MapBuilder("../configs/pics/npf_map.yml").build()
+
+settings:
+  title: "Карта коэффициента фильтрации"
+  figsize: [16, 12]
+  output: "../output/pictures/npf_k_layer1.png"
+  crs: "EPSG:3857"
+  legend_loc: "upper right"
+  base_fontsize: 14
+
+main_map:
+  layers:
+    - type: basemap
+      provider: "OpenStreetMap.Mapnik"
+      alpha: 0.8
+
+    - type: vector
+      path: "../input/vectors/border.shp"
+      zorder: 2
+      label: "Граница модели"
+      style:
+        edgecolor: "red"
+        linewidth: 2
+        facecolor: None
+
+    - type: flopy
+      model_ws: "../models/model_v1"
+      model_nam: "model_name"
+      layer: 0                 # индекс слоя, 0 — верхний
+      zorder: 1
+      grid_enabled: true
+      grid_color: "gray"
+      log_scale: true          # логарифмическая шкала — обычно нужна для Kф
+      parameter: "k"           # k (Kh) | k22 (анизотропия в плане) | k33 (Kv, через "k33:...", см. ниже)
+      style:
+        cmap: "seismic"
+        classification: "quantile"
+        n_classes: 10
+      colorbar:
+        enabled: true
+        label: "Коэффициент фильтрации, м/сут"
+
+# Для Kv (вертикальный) параметр в текущей версии extractor'а не выведен через
+# 'k33' напрямую — при необходимости продублируйте main_map.layers с
+# parameter: "k2" (анизотропия k22) либо используйте output/rasters, если
+# массив Kv экспортирован туда отдельно (type: raster, path: .../vk_layer1.tif).

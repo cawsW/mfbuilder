@@ -21,7 +21,7 @@ from mfbuilder.dto.mvr import MvrConfig
 
 class BaseConfig(BaseModel):
     name: Annotated[str, Field(description="Название модели")]
-    workspace: Annotated[DirectoryPath, Field(default="../models/model", description="Директория модели")]
+    workspace: Annotated[Path, Field(default="../models/model", description="Директория модели")]
     engine: Annotated[EngineType, Field(default=EngineType.MF6, description="Движок Modflow")]
     steady: Annotated[bool, Field(default=True, description="Стационар/Нестационар")]
     tunits: Annotated[TimeUnitType, Field(default=TimeUnitType.DAYS, description="Единицы измерения времени")]

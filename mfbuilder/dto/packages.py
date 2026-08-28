@@ -3,6 +3,8 @@ from typing import Any
 from pydantic import BaseModel, Field, ConfigDict, RootModel, model_validator
 from shapely.geometry import base as shapely_base
 
+from mfbuilder.utils.geometry import try_parse_wkt
+
 
 class SourceSinksFeature(BaseModel):
     """Базовый элемент источника/стока."""
@@ -26,6 +28,9 @@ class SourceSinksFeature(BaseModel):
         from shapely.geometry.base import BaseGeometry
 
         if isinstance(geom, (str, Path)):
+            wkt_geom = try_parse_wkt(str(geom))
+            if wkt_geom is not None:
+                return gpd.GeoDataFrame(geometry=[wkt_geom])
             path = Path(geom)
             if not path.exists():
                 raise FileNotFoundError(f"Файл геометрии не найден: {path}")
@@ -34,9 +39,9 @@ class SourceSinksFeature(BaseModel):
                 raise ValueError(f"Пустой файл геометрии: {path}")
             return gdf
         if isinstance(geom, BaseGeometry):
-            return [geom]
+            return gpd.GeoDataFrame(geometry=[geom])
         if isinstance(geom, list):
-            return geom
+            return gpd.GeoDataFrame(geometry=geom)
         raise TypeError(f"Некорректный тип geometry: {type(geom)}")
 
     def get_filtered_geometry(self):
