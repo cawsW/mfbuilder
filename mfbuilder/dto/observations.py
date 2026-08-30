@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict
 from shapely.geometry import base as shapely_base
 
@@ -13,8 +14,15 @@ class HeadObservation(BaseModel):
     layers: int | str = Field(..., description="Слой или имя столбца слоя в GeoJSON/shape")
     name: str | None = Field(None, description="Имя поля с названием точки")
     head: str | float | None = Field(None, description="Имя поля или значение наблюдённого уровня")
-    time: str | float | None = Field(None, description="Имя поля или значение со временем")
+    time: str = Field(description="Имя поля со временем/периодом наблюдения (например, 'year')")
     time_condition: list | None = Field(None)
+    obs_type: Literal["head", "drawdown"] = Field(
+        default="head", description="Тип наблюдения MF6 (модельные, через ModflowUtlobs): head | drawdown")
+    output: Path | None = Field(
+        default=None,
+        description="Куда сохранить этот же файл с добавленными колонками head_sim/res после расчёта "
+                    "модели; по умолчанию — output/vectors/<имя входного файла>"
+    )
 
     @classmethod
     def load_geometry(cls, geom):

@@ -10,6 +10,7 @@ from mfbuilder.handlers import BuilderFactory, GridFactory, SourceSinksFactory, 
     ObservationFactory
 from mfbuilder.mf6.mfmvr import MF6MvrBuilder
 from mfbuilder.mf6.zonebudget import MF6ZoneBudgetBuilder
+from mfbuilder.mf6.observations import MF6ObservationResultsExporter
 
 class LoaderYaml:
     @staticmethod
@@ -86,7 +87,13 @@ class Director:
                 logging.info("zonebudget created")
             else:
                 logging.warning("ZoneBudget поддерживается только для MF6 и будет пропущен.")
-        # observations.compare_results()
+
+        if cfg.outputs.run and cfg.observations and cfg.observations.heads:
+            if cfg.base.engine == EngineType.MF6:
+                exported = MF6ObservationResultsExporter(model, grid, cfg).export()
+                logging.info(f"observations exported: {exported}")
+            else:
+                logging.warning("Выгрузка результатов наблюдений поддерживается только для MF6.")
 
         # flopy.export.shapefile_utils.model_attributes_to_shapefile(os.path.join("..", "output", "vectors", "grid.shp"),
         #                                                            ml=model)
